@@ -454,6 +454,13 @@ def group_cut_into_parent(
     return _renumber(working)
 
 
+def omit_pieces(pieces: list[Piece], removed_boxes: list[tuple[int, int, int, int]]) -> list[Piece]:
+    """Drop cuts that should not be in the zip, then renumber what remains."""
+    gone = set(removed_boxes)
+    kept = [_copy_piece(piece) for piece in pieces if _identity_box(piece) not in gone]
+    return _renumber(kept)
+
+
 def _copy_piece(piece: Piece) -> Piece:
     return Piece(piece.number, piece.x, piece.y, piece.width, piece.height, piece.image, piece.source_box)
 

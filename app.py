@@ -15,7 +15,15 @@ import customtkinter as ctk
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
-from cutter import apply_grouped_cuts, group_cut_into_parent, hex_to_rgb, load_image, rgb_to_hex, split_sheet
+from cutter import (
+    apply_grouped_cuts,
+    group_cut_into_parent,
+    hex_to_rgb,
+    load_image,
+    omit_pieces,
+    rgb_to_hex,
+    split_sheet,
+)
 from exporter import (
     allocate_zip_path,
     names_for_pieces,
@@ -110,12 +118,15 @@ class Sheet:
         self.path = path
         self.override: tuple[int, int, int] | None = None
         self.piece_count: int | None = None
+        self.piece_total: int | None = None
         self.suggestion: tuple[int, int, int] | None = None
         self.suggestion_text = ""
         self.custom_names: dict[int, str] = {}
         self.excluded = False
         # Original boxes the user grouped back into the picture around them.
         self.grouped_boxes: list[tuple[int, int, int, int]] = []
+        # Cuts left out of the zip. The original file is not changed.
+        self.removed_boxes: list[tuple[int, int, int, int]] = []
         # How many boxes each right-click added, so undo puts the whole batch back.
         self.group_steps: list[int] = []
         self.error = ""
@@ -123,10 +134,12 @@ class Sheet:
         self.row = None
         self.meta_label = None
         self.chip = None
+        self.mark = None
 
     @property
     def flagged(self) -> bool:
-        return self.piece_count is not None and self.piece_count <= 1
+        count = self.piece_total if self.piece_total is not None else self.piece_count
+        return count is not None and count <= 1
 
 
 class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
@@ -462,7 +475,12 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self.zoom_slider.pack(side="left", padx=8)
         self.zoom_label = ctk.CTkLabel(zoom_row, text="Fit", text_color=TEXT, width=48)
         self.zoom_label.pack(side="left")
-        self._button(zoom_row, "Fit", self._fit_preview, width=70).pack(side="left", padx=(8, 0))
+        self._button(zoom_row, "Reset size", self._fit_preview, width=110).pack(side="left", padx=(8, 0))
+        self._button(zoom_row, "Remove Cut", self._remove_cut_selected, width=120).pack(side="left", padx=(8, 0))
+        self._button(zoom_row, "Exclude from zip", self._exclude_cuts_selected, primary=True, width=160).pack(
+            side="left", padx=(8, 0)
+        )
+        self._button(zoom_row, "Undo group", self._undo_group, width=120).pack(side="left", padx=(8, 0))
         ctk.CTkLabel(zoom_row, text="Scroll to zoom. Drag to look around.", text_color=MUTED).pack(side="left", padx=8)
 
         self.canvas = ctk.CTkCanvas(preview_wrap, bg="#101010", highlightthickness=0, cursor="fleur")
@@ -498,15 +516,10 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self.progress.grid_remove()
         self.status = ctk.CTkLabel(status_bar, text="Ready.", text_color=MUTED, anchor="w")
         self.status.grid(row=0, column=1, sticky="ew")
-        donate = ctk.CTkLabel(
-            status_bar,
-            text="Please Consider Donating",
-            text_color=RED,
-            cursor="hand2",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=14, underline=True),
-        )
-        donate.grid(row=0, column=2, sticky="e", padx=(12, 0))
-        donate.bind("<Button-1>", lambda _event: self._open_donate())
+        support = ctk.CTkFrame(status_bar, fg_color="transparent")
+        support.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self._support_line(support, "If you like this, please consider donating - ", self._open_donate)
+        self._support_line(support, "or consider subscribing on Twitch - ", self._open_twitch_sub)
 
         self._apply_preview_visibility()
 
@@ -534,8 +547,30 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             text_color=TEXT,
         )
 
+    def _support_line(self, parent, lead: str, command) -> None:
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(anchor="w")
+        ctk.CTkLabel(
+            row,
+            text=lead,
+            text_color=MUTED,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=13),
+        ).pack(side="left")
+        link = ctk.CTkLabel(
+            row,
+            text="here",
+            text_color="#4c8dff",
+            cursor="hand2",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=13, underline=True),
+        )
+        link.pack(side="left")
+        link.bind("<Button-1>", lambda _event: command())
+
     def _open_donate(self) -> None:
         webbrowser.open("https://www.redundis.com/donate.html")
+
+    def _open_twitch_sub(self) -> None:
+        webbrowser.open("http://twitch.tv/subs/redundis")
 
     def _on_output_scale(self, label: str) -> None:
         try:
@@ -895,8 +930,11 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             row = ctk.CTkFrame(self.list_frame, fg_color=BG, corner_radius=6)
             row.pack(fill="x", pady=2, padx=2)
             chip = ctk.CTkFrame(row, width=14, height=14, fg_color=BG, corner_radius=3)
-            chip.pack(side="left", padx=(8, 6), pady=8)
+            chip.pack(side="left", padx=(8, 4), pady=8)
             chip.pack_propagate(False)
+            mark = ctk.CTkLabel(row, text="✓", width=28, text_color=TEXT, cursor="hand2")
+            mark.pack(side="left", padx=(0, 6))
+            mark.bind("<Button-1>", lambda _event, item=sheet: self._flip_sheet_mark(item))
             # Name and status sit on separate lines so a long filename cannot cover the marker.
             text = ctk.CTkFrame(row, fg_color="transparent")
             text.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=4)
@@ -907,6 +945,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             sheet.row = row
             sheet.meta_label = meta
             sheet.chip = chip
+            sheet.mark = mark
             for widget in (row, chip, text, name, meta):
                 widget.bind("<Button-1>", lambda event, item=sheet: self._on_row_click(event, item))
                 widget.bind("<Button-3>", lambda event, item=sheet: self._on_row_menu(event, item))
@@ -937,11 +976,10 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             color = MUTED
         elif sheet.flagged:
             hint = f"try {rgb_to_hex(sheet.suggestion)}" if sheet.suggestion else "check color"
-            noun = "1 piece" if sheet.piece_count == 1 else f"{sheet.piece_count} pieces"
-            text = f"{noun} — {hint}"
+            text = f"{_piece_label(sheet)} — {hint}"
             color = WARN
         else:
-            text = f"{sheet.piece_count} pieces"
+            text = _piece_label(sheet)
             color = TEXT
         sheet.meta_label.configure(text=text, text_color=color)
         if sheet.excluded:
@@ -953,6 +991,16 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         else:
             chip_color = SELECT if selected else BG
         sheet.chip.configure(fg_color=chip_color)
+        if sheet.mark is not None:
+            sheet.mark.configure(text="×" if sheet.excluded else "✓", text_color=WARN if sheet.excluded else TEXT)
+
+    def _flip_sheet_mark(self, sheet: Sheet) -> None:
+        if self.busy:
+            return
+        sheet.excluded = not sheet.excluded
+        self._style_row(sheet)
+        if self.selected is sheet:
+            self._load_preview(sheet)
 
     def _on_row_click(self, event, sheet: Sheet) -> None:
         if self.busy:
@@ -1239,11 +1287,15 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         if error:
             sheet.error = error
             sheet.piece_count = None
+            sheet.piece_total = None
             sheet.suggestion = None
             sheet.suggestion_text = ""
         else:
             sheet.error = ""
-            sheet.piece_count = len(result.pieces)
+            grouped = apply_grouped_cuts(result.pieces, sheet.grouped_boxes)
+            kept = omit_pieces(grouped, sheet.removed_boxes)
+            sheet.piece_total = len(grouped)
+            sheet.piece_count = len(kept)
             sheet.suggestion = result.suggestion
             sheet.suggestion_text = result.suggestion_text
         self._style_row(sheet)
@@ -1319,6 +1371,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         if error:
             sheet.error = error
             sheet.piece_count = None
+            sheet.piece_total = None
             self._preview_image = None
             self._preview_pieces = []
             self._style_row(sheet)
@@ -1329,8 +1382,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             return
         sheet.error = ""
         self._raw_pieces = result.pieces
-        shown = apply_grouped_cuts(result.pieces, sheet.grouped_boxes)
-        sheet.piece_count = len(shown)
+        shown = self._visible_from(result.pieces, sheet)
         sheet.suggestion = result.suggestion
         sheet.suggestion_text = result.suggestion_text
         self._style_row(sheet)
@@ -1567,9 +1619,9 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self._draw_preview()
         count = len(self._cut_boxes)
         if count > 1:
-            self._set_status(f"{count} cuts selected. Right-click to group them all into the larger picture.")
+            self._set_status(f"{count} cuts selected. Use Remove Cut or Exclude from zip.")
         elif count == 1:
-            self._set_status("1 cut selected. Right-click to group it into the larger picture.")
+            self._set_status("1 cut selected. Use Remove Cut or Exclude from zip.")
 
     def _style_thumb(self, box: tuple) -> None:
         column = self._thumb_columns.get(box)
@@ -1598,14 +1650,22 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         )
         if len(targets) > 1:
             menu.add_command(
-                label=f"Group {len(targets)} cuts into the larger picture",
+                label=f"Remove Cut on {len(targets)}",
                 command=lambda boxes=list(targets): self._group_cuts(boxes),
+            )
+            menu.add_command(
+                label=f"Exclude {len(targets)} from zip",
+                command=lambda boxes=list(targets): self._exclude_cuts(boxes),
             )
         elif len(targets) == 1:
             number = next(item.number for item in self._preview_pieces if _piece_box(item) == targets[0])
             menu.add_command(
-                label=f"Group cut {number} into the larger picture",
+                label=f"Remove Cut {number}",
                 command=lambda boxes=list(targets): self._group_cuts(boxes),
+            )
+            menu.add_command(
+                label=f"Exclude cut {number} from zip",
+                command=lambda boxes=list(targets): self._exclude_cuts(boxes),
             )
         if self.selected.grouped_boxes:
             menu.add_command(label="Undo last grouping", command=self._undo_group)
@@ -1615,7 +1675,8 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
 
     def _group_cuts(self, boxes: list[tuple[int, int, int, int]]) -> None:
         sheet = self.selected
-        if sheet is None or not self._raw_pieces:
+        if sheet is None or not self._raw_pieces or not boxes:
+            self._set_status("Select a cut first.")
             return
         # Smallest first, and don't let one selected cut swallow another.
         ordered = sorted(boxes, key=lambda box: box[2] * box[3])
@@ -1638,7 +1699,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             return
         sheet.grouped_boxes = pending
         sheet.group_steps.append(added)
-        note = f"Grouped {added} cut(s) into the picture around them."
+        note = f"Remove Cut put {added} piece(s) back into the larger picture."
         if skipped:
             note += f" Left {skipped} with no larger picture."
         self._cut_boxes = []
@@ -1661,15 +1722,38 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         sheet = self.selected
         if sheet is None:
             return
-        shown = apply_grouped_cuts(self._raw_pieces, sheet.grouped_boxes)
+        shown = self._visible_from(self._raw_pieces, sheet)
         self._preview_pieces = shown
-        sheet.piece_count = len(shown)
         self._style_row(sheet)
         if self.list_sort.startswith("pieces"):
             self._rebuild_list()
         self._fill_thumbs()
         self._draw_preview()
-        self._set_status(f"{note} {len(shown)} piece(s) left.")
+        self._set_status(f"{note} {_piece_label(sheet)}.")
+
+    def _remove_cut_selected(self) -> None:
+        self._group_cuts(list(self._cut_boxes))
+
+    def _exclude_cuts_selected(self) -> None:
+        self._exclude_cuts(list(self._cut_boxes))
+
+    def _exclude_cuts(self, boxes: list[tuple[int, int, int, int]]) -> None:
+        sheet = self.selected
+        if sheet is None or not boxes:
+            self._set_status("Select a cut first.")
+            return
+        sheet.removed_boxes = [*sheet.removed_boxes, *boxes]
+        self._cut_boxes = []
+        self._cut_anchor = None
+        noun = "cut" if len(boxes) == 1 else "cuts"
+        self._refresh_grouped_preview(f"Excluded {len(boxes)} {noun} from the zip.")
+
+    def _visible_from(self, pieces, sheet: Sheet):
+        grouped = apply_grouped_cuts(pieces, sheet.grouped_boxes)
+        shown = omit_pieces(grouped, sheet.removed_boxes)
+        sheet.piece_total = len(grouped)
+        sheet.piece_count = len(shown)
+        return shown
 
     def _export(self) -> None:
         if self.busy:
@@ -1711,6 +1795,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
                     "custom": dict(sheet.custom_names) if self.custom_names.get() else None,
                     "excluded": sheet.excluded,
                     "grouped": list(sheet.grouped_boxes),
+                    "removed": list(sheet.removed_boxes),
                 }
             )
         if not self.keep_both.get():
@@ -1754,7 +1839,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
                     result = split_sheet(
                         image, job["color"], tolerance, minimum, build_images=True, smart_gaps=smart
                     )
-                    result.pieces = apply_grouped_cuts(result.pieces, job["grouped"])
+                    result.pieces = omit_pieces(apply_grouped_cuts(result.pieces, job["grouped"]), job["removed"])
                     if not result.pieces:
                         skipped.append(job["source"].name)
                         continue
@@ -1851,6 +1936,17 @@ def _sort_key(label: str) -> str:
 
 def _piece_box(piece) -> tuple[int, int, int, int]:
     return piece.source_box or (piece.x, piece.y, piece.width, piece.height)
+
+
+def _piece_label(sheet: Sheet) -> str:
+    """90 pieces after Remove Cut. 80 out of 90 after Exclude from zip."""
+    if sheet.piece_count is None:
+        return "Not scanned"
+    total = sheet.piece_total if sheet.piece_total is not None else sheet.piece_count
+    if sheet.piece_count == total:
+        noun = "piece" if sheet.piece_count == 1 else "pieces"
+        return f"{sheet.piece_count} {noun}"
+    return f"{sheet.piece_count} out of {total}"
 
 
 def _sheet_sort_value(sheet: Sheet, mode: str):
