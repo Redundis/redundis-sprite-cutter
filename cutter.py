@@ -334,12 +334,21 @@ def _split_eroded(
         x0 = int(xs.min())
         y0 = int(ys.min())
         boxes.append((x0, y0, int(xs.max()) - x0 + 1, int(ys.max()) - y0 + 1))
-    if len(boxes) < 2:
+    if len(boxes) < 2 or not _split_keeps_sprite(component, boxes):
         return None
     return boxes
 
 
-def _erode(mask: np.ndarray, rounds: int) -> np.ndarray:
+def _split_keeps_sprite(component: np.ndarray, boxes: list[tuple[int, int, int, int]]) -> bool:
+    """Reject a split that would throw away thin parts, such as spray on a splash."""
+    total = int(component.sum())
+    if total <= 0:
+        return False
+    covered = np.zeros_like(component, dtype=bool)
+    for x, y, w, h in boxes:
+        covered[y : y + h, x : x + w] = True
+    kept = int((component & covered).sum())
+    return kept >= total * 0.9
     result = mask
     for _ in range(rounds):
         up = np.zeros_like(result)

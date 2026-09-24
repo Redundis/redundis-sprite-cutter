@@ -280,7 +280,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self.exclude_button = self._button(row_buttons, "Exclude", self._toggle_exclude, width=110)
         self.exclude_button.pack(side="left", padx=(0, 6))
         self._button(row_buttons, "Clear", self._clear_sheets, width=80).pack(side="left", padx=(0, 6))
-        self.scan_button = self._button(row_buttons, "Scan", self._scan, primary=True)
+        self.scan_button = self._button(row_buttons, "Scan all", self._scan, primary=True, width=140)
         self.scan_button.pack(side="right")
 
         right = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=10)
