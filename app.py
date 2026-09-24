@@ -466,21 +466,21 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             to=10,
             number_of_steps=9,
             command=self._on_zoom,
-            width=220,
+            width=150,
             button_color=RED,
             button_hover_color=RED_HOVER,
             progress_color=RED,
         )
         self.zoom_slider.set(self.zoom)
-        self.zoom_slider.pack(side="left", padx=8)
-        self.zoom_label = ctk.CTkLabel(zoom_row, text="Fit", text_color=TEXT, width=48)
+        self.zoom_slider.pack(side="left", padx=6)
+        self.zoom_label = ctk.CTkLabel(zoom_row, text="Fit", text_color=TEXT, width=40)
         self.zoom_label.pack(side="left")
-        self._button(zoom_row, "Reset size", self._fit_preview, width=110).pack(side="left", padx=(8, 0))
-        self._button(zoom_row, "Remove Cut", self._remove_cut_selected, width=120).pack(side="left", padx=(8, 0))
-        self._button(zoom_row, "Exclude from zip", self._exclude_cuts_selected, primary=True, width=160).pack(
-            side="left", padx=(8, 0)
+        self._button(zoom_row, "Reset size", self._fit_preview, width=108).pack(side="left", padx=(6, 0))
+        self._button(zoom_row, "Remove Cut", self._remove_cut_selected, width=118).pack(side="left", padx=(6, 0))
+        self._button(zoom_row, "Exclude from zip", self._exclude_cuts_selected, primary=True, width=156).pack(
+            side="left", padx=(6, 0)
         )
-        self._button(zoom_row, "Undo group", self._undo_group, width=120).pack(side="left", padx=(8, 0))
+        self._button(zoom_row, "Undo group", self._undo_group, width=118).pack(side="left", padx=(6, 0))
         ctk.CTkLabel(zoom_row, text="Scroll to zoom. Drag to look around.", text_color=MUTED).pack(side="left", padx=8)
 
         self.canvas = ctk.CTkCanvas(preview_wrap, bg="#101010", highlightthickness=0, cursor="fleur")
