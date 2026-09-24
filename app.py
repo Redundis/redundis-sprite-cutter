@@ -129,6 +129,8 @@ class Sheet:
         self.removed_boxes: list[tuple[int, int, int, int]] = []
         # How many boxes each right-click added, so undo puts the whole batch back.
         self.group_steps: list[int] = []
+        # Last Remove Cut or Exclude from zip, so Undo can put a mistake back.
+        self.undo: list[tuple] = []
         self.error = ""
         self.generation = 0
         self.row = None
@@ -600,6 +602,13 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         )
 
     def _on_close(self) -> None:
+        if self.sheets:
+            leave = messagebox.askyesno(
+                "Redundis Sprite Cutter",
+                "Sheets are still in this list. Close the app anyway?",
+            )
+            if not leave:
+                return
         self._persist()
         self.destroy()
 
@@ -1699,6 +1708,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             return
         sheet.grouped_boxes = pending
         sheet.group_steps.append(added)
+        sheet.undo.append(("group", added))
         note = f"Remove Cut put {added} piece(s) back into the larger picture."
         if skipped:
             note += f" Left {skipped} with no larger picture."
@@ -1708,15 +1718,25 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
 
     def _undo_group(self) -> None:
         sheet = self.selected
-        if sheet is None or not sheet.grouped_boxes:
+        if sheet is None or not sheet.undo:
+            self._set_status("Nothing to undo.")
             return
-        count = sheet.group_steps.pop() if sheet.group_steps else 1
-        for _ in range(min(count, len(sheet.grouped_boxes))):
-            sheet.grouped_boxes.pop()
+        kind, payload = sheet.undo.pop()
+        if kind == "exclude":
+            gone = set(payload)
+            sheet.removed_boxes = [box for box in sheet.removed_boxes if box not in gone]
+            note = "Put those cuts back in the zip."
+        else:
+            count = payload
+            if sheet.group_steps:
+                sheet.group_steps.pop()
+            for _ in range(min(count, len(sheet.grouped_boxes))):
+                sheet.grouped_boxes.pop()
+            noun = "cuts" if count != 1 else "cut"
+            note = f"Put the last {noun} back on their own."
         self._cut_boxes = []
         self._cut_anchor = None
-        noun = "cuts" if count != 1 else "cut"
-        self._refresh_grouped_preview(f"Put the last {noun} back on their own.")
+        self._refresh_grouped_preview(note)
 
     def _refresh_grouped_preview(self, note: str) -> None:
         sheet = self.selected
@@ -1743,6 +1763,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             self._set_status("Select a cut first.")
             return
         sheet.removed_boxes = [*sheet.removed_boxes, *boxes]
+        sheet.undo.append(("exclude", list(boxes)))
         self._cut_boxes = []
         self._cut_anchor = None
         noun = "cut" if len(boxes) == 1 else "cuts"

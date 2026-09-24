@@ -315,6 +315,22 @@ def _split_touching(component: np.ndarray, min_pixels: int) -> list[tuple[int, i
     return None
 
 
+def _erode(mask: np.ndarray, rounds: int) -> np.ndarray:
+    """Shrink foreground by one pixel per round. A pixel stays only if its cross stays set."""
+    result = mask.astype(bool)
+    for _ in range(rounds):
+        nxt = np.zeros_like(result)
+        nxt[1:-1, 1:-1] = (
+            result[1:-1, 1:-1]
+            & result[1:-1, :-2]
+            & result[1:-1, 2:]
+            & result[:-2, 1:-1]
+            & result[2:, 1:-1]
+        )
+        result = nxt
+    return result
+
+
 def _split_eroded(
     component: np.ndarray,
     min_pixels: int,
