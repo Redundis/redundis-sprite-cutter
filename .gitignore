@@ -1,0 +1,5 @@
+__pycache__/
+build/
+dist/
+*.pyc
+_ui_preview.png

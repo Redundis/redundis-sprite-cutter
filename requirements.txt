@@ -1,0 +1,5 @@
+customtkinter>=5.2.0
+pillow>=10.0.0
+numpy>=1.26.0
+pillow-heif>=0.16.0
+tkinterdnd2>=0.4.0
