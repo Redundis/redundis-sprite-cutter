@@ -307,6 +307,10 @@ def _boxes_from_content(content: np.ndarray, min_pixels: int, smart_gaps: bool) 
 
 def _split_touching(component: np.ndarray, min_pixels: int) -> list[tuple[int, int, int, int]] | None:
     """Pull apart sprites that share an edge. A solid map stays one piece."""
+    height, width = component.shape
+    # A whole map is one picture. Splitting it walks every pixel and freezes the app.
+    if height * width > 1_500_000:
+        return None
     # Two pixels of shrink separates a light touch. Three handles a thicker join.
     for rounds in (2, 3):
         boxes = _split_eroded(component, min_pixels, rounds)
@@ -475,6 +479,36 @@ def omit_pieces(pieces: list[Piece], removed_boxes: list[tuple[int, int, int, in
     gone = set(removed_boxes)
     kept = [_copy_piece(piece) for piece in pieces if _identity_box(piece) not in gone]
     return _renumber(kept)
+
+
+def apply_manual_boxes(
+    pieces: list[Piece],
+    image: Image.Image,
+    manual: dict[tuple[int, int, int, int], tuple[int, int, int, int]],
+) -> list[Piece]:
+    """Replace a cut's box with the rectangle the user drew, and crop that from the sheet.
+
+    The crop keeps every pixel inside the new box, including ones the automatic
+    cut missed. Two cuts may cover the same pixels. The original source box stays
+    so later edits still know which cut this is.
+    """
+    if not manual:
+        return pieces
+    width, height = image.size
+    updated = []
+    for piece in pieces:
+        copy = _copy_piece(piece)
+        box = manual.get(_identity_box(copy))
+        if box is not None:
+            x, y, box_w, box_h = box
+            x = max(0, min(width - 1, int(x)))
+            y = max(0, min(height - 1, int(y)))
+            box_w = max(1, min(width - x, int(box_w)))
+            box_h = max(1, min(height - y, int(box_h)))
+            copy.x, copy.y, copy.width, copy.height = x, y, box_w, box_h
+            copy.image = image.crop((x, y, x + box_w, y + box_h))
+        updated.append(copy)
+    return updated
 
 
 def _copy_piece(piece: Piece) -> Piece:

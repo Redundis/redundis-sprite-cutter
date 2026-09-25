@@ -3,7 +3,7 @@
 
 from PyInstaller.utils.hooks import collect_all
 
-datas = [("fonts", "fonts")]
+datas = [("fonts", "fonts"), ("icon.ico", "."), ("icon.png", ".")]
 binaries = []
 hiddenimports = []
 for package in ("customtkinter", "tkinterdnd2", "pillow_heif"):
@@ -37,6 +37,7 @@ exe = EXE(
     upx=False,
     console=False,
     disable_windowed_traceback=False,
+    icon="icon.ico",
 )
 coll = COLLECT(
     exe,
