@@ -13,7 +13,7 @@ DEFAULTS = {
     "min_pixels": 64,
     "custom_names": False,
     "preview_before_export": True,
-    "keep_both": False,
+    "project_name": "",
     "bundle_project": False,
     "include_subfolders": False,
     "smart_gaps": True,
@@ -51,13 +51,13 @@ def load_settings() -> dict:
     for key in (
         "custom_names",
         "preview_before_export",
-        "keep_both",
         "bundle_project",
         "include_subfolders",
         "smart_gaps",
     ):
         values[key] = bool(values[key])
     values["output_folder"] = str(values["output_folder"] or "")
+    values["project_name"] = str(values.get("project_name") or "")
     sort = str(values["list_sort"] or "name")
     allowed = {
         "name",

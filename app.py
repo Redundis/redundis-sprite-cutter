@@ -9,29 +9,33 @@ import sys
 import threading
 import webbrowser
 from pathlib import Path
-from tkinter import Listbox, Menu, colorchooser, filedialog, messagebox
+from tkinter import Label, Listbox, Menu, Toplevel, colorchooser, filedialog, messagebox
 
 import customtkinter as ctk
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 from cutter import (
-    apply_grouped_cuts,
-    apply_manual_boxes,
-    group_cut_into_parent,
+    empty_cut,
+    export_from_cuts,
     hex_to_rgb,
     load_image,
-    omit_pieces,
+    pieces_from_cuts,
     rgb_to_hex,
     split_sheet,
 )
 from exporter import (
     allocate_zip_path,
+    cut_display_name,
+    name_base,
     names_for_pieces,
+    project_zip_name,
+    safe_zip_stem,
     scale_piece,
     write_original_zip,
     write_project_zip,
     write_sheet_zip,
+    zip_stem,
 )
 from settings import load_settings, save_settings, settings_file
 
@@ -75,35 +79,72 @@ Use Add sheets, Add folder, or drop files onto the window. The first sheet opens
 Gap color
 The empty color between pictures. Default puts the shared color back to magenta, #ff00ff. This sheet only keeps a different color on the open sheet. Use default makes that sheet follow the color at the top again. Pick from sheet takes the color you click.
 
-Merge 2+
-Select two or more pictures on the bottom row. They become one picture at the earliest number. Later numbers move down. You can split a picture, then split either half again. Undo separates the last merge or split.
-
 Pass as is
-The selected pictures go in the zip as their own files, using the cuts you see. They turn purple so you can see they were left alone. Exclude from zip leaves them out of the download and lists them with the other excluded cuts. They stay on screen with a dashed outline.
+The selected pictures go in the zip as their own files, using the cuts you see. They turn purple.
 
-Undo and Redo
-These take back or restore the last change: a merge, a split, a box drag, a 1 px nudge, Pass as is, or Exclude. Right-click either button for the last 10.
+Leave out of zip
+Leaves the selected pictures out of the download. They stay on screen with a dashed outline and the words Left out of zip.
 
-Revert selected
-Puts only the selected sprites back to the way they were when the sheet was scanned. It asks first. Undo can bring the edits back.
+Look and pick
+The main screen is for looking and picking. Scroll or pinch to zoom. Drag to look around. Reset size shows the whole sheet.
 
-Lock and Unlock
-Boxes start locked. Select pictures, then Unlock, then drag a corner or edge. Lock again when you are done. Cyan means edited and still unlocked. Green means edited and locked.
+Select
+Click a cut or a thumb. Ctrl+click adds one. Shift+click takes a range. Gold means selected.
 
-Split — and Split |
-Split — cuts the selected picture into a top half and a bottom half. Split | cuts it into a left half and a right half. The first half keeps its number. The new picture is the next number. Select either half to split it again.
+Order and names
+Drag a thumb to a new place to change its number. The cutter always shows those numbers so you can pick and edit. Saved files use the sheet name plus that number, like castle -1.png, unless Custom file names is on. Turn that on to type a name. A unique name stays as you typed it, like hero.png. If more than one picture uses the same name, the list adds -1, -2, -3, like sword -1.png. Pictures left out of the zip are not numbered. A project name only names the zip. It does not change these numbers. Reset order puts the numbers back the way they were after the first scan. It asks first. Undo takes one move back. Change history can undo several.
 
-Sprite changes
-Opens a larger before and after for the pictures you selected. The size line under the sheet still shows the pixel sizes. Drag that line if it does not fit.
+Quick merge
+Joins two or more highlighted pictures into one box. The earliest number stays. Undo takes that merge back.
 
-Grow and Shrink
-Move one edge by a single pixel. Arrow keys grow that side. Shift plus an arrow key shrinks it. Unlock the picture first.
+Change history
+Lists every box change on this sheet. Undo to here puts the sheet back to before that change. The same list is used on the main screen and in Edit cuts.
+
+Edit cuts
+Opens a larger window to change boxes. That window has its own Help for zoom, pan, move, split, and the other tools. Confirm writes the edits. Cancel puts the sheet back.
+
+Export
+Each sheet becomes its own zip in the output folder. A project name only names that zip. It does not change the numbers on the cuts. The pictures inside still use the sheet name plus the number, like castle -1.png, unless Custom file names is on. If you type a project name, zips are named like FF1 - castle.zip. Leave it blank for the sheet name, like castle.zip. If that name is already in the folder, Save without replacing keeps the old file and writes castle (2).zip. You can also type a different project name there. Overwrite old files is the last choice. Also save one zip that contains every sheet zip asks where to put that extra file.
+"""
+
+EDIT_HELP_TEXT = """Edit cuts
+Change the boxes on this sheet. Confirm keeps the edits. Cancel puts the sheet back.
+
+Look around
+The whole sheet stays on screen. Selecting a box only changes its outline. Scroll the mouse wheel to zoom. A trackpad pinch does the same. Drag to move the view, even if you start on a box. A drag does not change what is selected. Reset size shows the whole sheet again.
+
+Select
+A click or tap on a box highlights only that box. Dragging is never a select. Gold means that cut can be edited. A box must be highlighted before you can move or resize it.
+The small pictures under the sheet work the same as the main page. Click one to select it. Ctrl+click adds or removes one. Shift+click marks a range. Select all and Select none are shortcuts.
+
+Order and names
+Drag a picture to a new place to change its number. The cutter always shows those numbers so you can pick and edit. Saved files use the sheet name plus that number, like castle -1.png, unless you typed a custom name. A unique custom name stays as you typed it, like hero.png. If more than one picture uses the same name, the list adds -1, -2, -3, like sword -1.png. Pictures left out of the zip are not numbered. Reset order puts the numbers back the way they were after the first scan. It asks first. Undo takes one move back. Redo and Change history can put several moves back.
+
+Move and resize
+After one box is highlighted, drag the middle to move the whole box. Drag an edge or a corner to resize. Move only works with one box selected. The selected box keeps the grab, even when other boxes sit close. Zoom in if two boxes are tight.
+
+Lock
+Lock pins the selected boxes so they cannot be moved or resized. Their outline turns sky blue and dashed. Unlock lets you edit them again. Use this for leftover boxes that keep getting grabbed by accident.
+
+Buttons
+New cut makes a new box, about the average size of the current cuts, then asks what number it should be. The new box is selected. If another box was highlighted, the new one appears near it.
+Split across cuts one selected box in half, left and right. Split down cuts it top and bottom.
+Merge turns two or more selected boxes into one box that covers them all. The earliest number stays. Undo and Redo can take that merge back.
+Keep with needs two cuts: a leftover and the sprite it belongs with. The leftover is not its own file.
+Leave out keeps the selected cuts on screen with a dashed red outline, and they are not in the zip. Pass as is puts them in the zip as their own files, using the boxes you see now.
+Undo and Redo step through your edits. Change history lists every change on this sheet and lets you undo back to any one of them. Revert puts the selected cuts back to the first scan.
+
+Colors
+Gold = selected. Red = cut. Cyan = new. Orange = split. Dashed red = left out of the zip. Sky dashed = locked. Green = kept with another. Purple = pass as is.
 """
 LINE = "#2e2e2e"
 WARN = "#e0a030"
+GOLD = "#f0c040"
 EDIT = "#3ec6ff"
+SPLIT = "#ff8c32"
 LOCK = "#7dffb3"
 PASS = "#b388ff"
+PIN = "#7ec8ff"
 SELECT = "#3a1218"
 FONT_FAMILY = "Silkscreen"
 _BOLD_FONT_PATH: Path | None = None
@@ -161,29 +202,14 @@ class Sheet:
         self.piece_total: int | None = None
         self.suggestion: tuple[int, int, int] | None = None
         self.suggestion_text = ""
-        self.custom_names: dict[int, str] = {}
+        self.custom_names: dict[str, str] = {}
         self.excluded = False
-        # Original boxes the user grouped back into the picture around them.
-        self.grouped_boxes: list[tuple[int, int, int, int]] = []
-        # Cuts left out of the zip. The original file is not changed.
-        self.removed_boxes: list[tuple[int, int, int, int]] = []
-        # Original cut box -> the rectangle the user drew. Locked boxes will not move until unlocked.
-        self.manual_boxes: dict[tuple[int, int, int, int], tuple[int, int, int, int]] = {}
-        self.locked_boxes: set[tuple[int, int, int, int]] = set()
-        # Boxes start locked. Only these can be dragged.
-        self.unlocked_boxes: set[tuple[int, int, int, int]] = set()
+        self.next_cut = 1
+        self.cut_order: list[str] = []
+        self.scan_order: list[str] = []
+        self.cuts: dict[str, dict] = {}
         self.box_undo: list[tuple[dict, str]] = []
         self.box_redo: list[tuple[dict, str]] = []
-        # One original cut divided into two boxes. identity -> (box, box)
-        self.splits: dict[tuple[int, int, int, int], tuple] = {}
-        # Two original cuts joined into one picture. (keep, drop)
-        self.sprite_merges: list[tuple[tuple, tuple]] = []
-        # Pictures the user marked to save as their own files, left as they are.
-        self.passed_boxes: set[tuple] = set()
-        # How many boxes each right-click added, so undo puts the whole batch back.
-        self.group_steps: list[int] = []
-        # Last Remove Cut or Exclude from zip, so Undo can put a mistake back.
-        self.undo: list[tuple] = []
         self.error = ""
         self.generation = 0
         self.row = None
@@ -195,6 +221,44 @@ class Sheet:
     def flagged(self) -> bool:
         count = self.piece_total if self.piece_total is not None else self.piece_count
         return count is not None and count <= 1
+
+    def new_cut_id(self) -> str:
+        cut_id = f"c{self.next_cut}"
+        self.next_cut += 1
+        return cut_id
+
+    def install_scan(self, pieces) -> None:
+        self.cuts = {}
+        self.cut_order = []
+        self.next_cut = 1
+        self.box_undo = []
+        self.box_redo = []
+        self.custom_names = {}
+        for piece in pieces:
+            cut_id = self.new_cut_id()
+            box = (piece.x, piece.y, piece.width, piece.height)
+            self.cuts[cut_id] = empty_cut(box)
+            self.cut_order.append(cut_id)
+        self.scan_order = list(self.cut_order)
+
+    def snapshot_cuts(self) -> dict:
+        return {
+            "order": list(self.cut_order),
+            "cuts": {key: dict(value) for key, value in self.cuts.items()},
+            "next_cut": self.next_cut,
+        }
+
+    def restore_cuts(self, state: dict) -> None:
+        self.cut_order = list(state.get("order") or [])
+        self.cuts = {key: dict(value) for key, value in (state.get("cuts") or {}).items()}
+        self.next_cut = int(state.get("next_cut") or (len(self.cut_order) + 1))
+
+    def exportable_count(self) -> int:
+        return sum(
+            1
+            for cut_id in self.cut_order
+            if cut_id in self.cuts and not self.cuts[cut_id].get("out") and not self.cuts[cut_id].get("keep_with")
+        )
 
 
 class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
@@ -247,15 +311,17 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self._thumb_focus = None
         self._thumb_pending: list = []
         self._thumb_columns: dict[tuple, object] = {}
-        self._cut_boxes: list[tuple[int, int, int, int]] = []
-        self._cut_anchor: tuple[int, int, int, int] | None = None
+        self._cut_ids: list[str] = []
+        self._cut_anchor: str | None = None
+        self._cut_boxes: list = []
+        self._thumb_drag = None
         self.list_sort = saved["list_sort"]
         self._ui_queue: queue.Queue = queue.Queue()
 
         self.include_subfolders = ctk.BooleanVar(value=saved["include_subfolders"])
         self.custom_names = ctk.BooleanVar(value=saved["custom_names"])
         self.preview_on = ctk.BooleanVar(value=saved["preview_before_export"])
-        self.keep_both = ctk.BooleanVar(value=saved["keep_both"])
+        self.project_name = ctk.StringVar(value=saved["project_name"])
         self.bundle_project = ctk.BooleanVar(value=saved["bundle_project"])
         self.smart_gaps = ctk.BooleanVar(value=saved["smart_gaps"])
 
@@ -441,18 +507,15 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self._check(checks, "Preview before export", self.preview_on, self._toggle_preview).grid(
             row=0, column=1, sticky="w", pady=3
         )
-        self._check(checks, "Keep both if the zip name is taken", self.keep_both, self._persist).grid(
-            row=1, column=0, columnspan=2, sticky="w", padx=(0, 18), pady=3
-        )
         self._check(checks, "Also save one zip that contains every sheet zip", self.bundle_project, self._persist).grid(
-            row=2, column=0, columnspan=2, sticky="w", pady=3
+            row=1, column=0, columnspan=2, sticky="w", pady=3
         )
         self._check(
             checks,
             "Also split transparent and touching sprites",
             self.smart_gaps,
             self._cuts_changed,
-        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=3)
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=3)
 
         output = ctk.CTkFrame(right, fg_color=PANEL)
         output.grid(row=2, column=0, sticky="ew", padx=12, pady=4)
@@ -468,6 +531,25 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self._button(output, "Browse", self._choose_output).grid(row=0, column=2, padx=(8, 0))
         self.export_button = self._button(output, "Export all", self._export, primary=True, width=140)
         self.export_button.grid(row=0, column=3, padx=(8, 0))
+        ctk.CTkLabel(output, text="Project name", text_color=MUTED).grid(row=1, column=0, padx=(0, 8), pady=(8, 0))
+        self.project_entry = ctk.CTkEntry(
+            output,
+            textvariable=self.project_name,
+            fg_color=BG,
+            border_color=LINE,
+            text_color=TEXT,
+            placeholder_text="optional",
+        )
+        self.project_entry.grid(row=1, column=1, columnspan=2, sticky="ew", pady=(8, 0))
+        self.project_entry.bind("<FocusOut>", lambda _event: self._persist())
+        ctk.CTkLabel(
+            output,
+            text="Names the zip only, like FF1 - castle.zip. The pictures inside still use numbers. Leave blank for the sheet name.",
+            text_color=MUTED,
+            wraplength=360,
+            justify="left",
+            anchor="w",
+        ).grid(row=2, column=1, columnspan=3, sticky="ew", pady=(2, 0))
 
         sheet_color = ctk.CTkFrame(right, fg_color=PANEL)
         sheet_color.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 4))
@@ -514,28 +596,6 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         preview_wrap.grid_columnconfigure(0, weight=1)
         preview_wrap.grid_rowconfigure(2, weight=1)
 
-        action_row = ctk.CTkFrame(preview_wrap, fg_color=BG)
-        action_row.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 2))
-        self.zoom_row = action_row
-        self._button(action_row, "Merge 2+", self._merge_selected, width=100).pack(side="left", padx=(6, 0))
-        self._button(action_row, "Pass as is", self._pass_as_is, width=110).pack(side="left", padx=(6, 0))
-        self._button(action_row, "Exclude from zip", self._exclude_cuts_selected, primary=True, width=140).pack(
-            side="left", padx=(6, 0)
-        )
-        self._button(action_row, "Changes", self._show_changes, width=90).pack(side="left", padx=(6, 0))
-
-        box_row = ctk.CTkFrame(preview_wrap, fg_color=BG)
-        box_row.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 2))
-        self.box_row = box_row
-        self.undo_box_button = self._button(box_row, "Undo", self._undo_box, width=72)
-        self.redo_box_button = self._button(box_row, "Redo", self._redo_box, width=72)
-        self.undo_box_button.pack(side="left")
-        self.redo_box_button.pack(side="left", padx=(6, 0))
-        self._button(box_row, "Revert selected", self._revert_boxes, width=140).pack(side="left", padx=(6, 0))
-        self._button(box_row, "Lock", self._lock_selected, width=64).pack(side="left", padx=(6, 0))
-        self._button(box_row, "Unlock", self._unlock_selected, width=80).pack(side="left", padx=(6, 0))
-        self._button(box_row, "Split —", self._split_horizontal, width=80).pack(side="left", padx=(6, 0))
-        self._button(box_row, "Split |", self._split_vertical, width=72).pack(side="left", padx=(6, 0))
         zoom_row = ctk.CTkFrame(preview_wrap, fg_color=BG)
         zoom_row.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 2))
         self.zoom_bar = zoom_row
@@ -555,38 +615,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self.zoom_label = ctk.CTkLabel(zoom_row, text="Fit", text_color=TEXT, width=36)
         self.zoom_label.pack(side="left")
         self._button(zoom_row, "Reset size", self._fit_preview, width=100).pack(side="left", padx=(6, 0))
-        self._button(zoom_row, "Sprite changes", self._show_sprite_changes, width=140).pack(side="left", padx=(6, 0))
-        self.size_canvas = ctk.CTkCanvas(zoom_row, height=28, bg=BG, highlightthickness=0)
-        self.size_canvas.pack(side="left", fill="x", expand=True, padx=8)
-        self._size_text = self.size_canvas.create_text(
-            4,
-            14,
-            anchor="w",
-            fill=MUTED,
-            font=("Segoe UI", 12),
-            text="Select one or two pictures below. Drag this line if it does not fit.",
-        )
-        self.size_canvas.bind("<ButtonPress-1>", lambda event: self.size_canvas.scan_mark(event.x, 0))
-        self.size_canvas.bind("<B1-Motion>", lambda event: self.size_canvas.scan_dragto(event.x, 0, gain=1))
         self._compare_refs = []
-
-        nudge_row = ctk.CTkScrollableFrame(preview_wrap, orientation="horizontal", height=46, fg_color=BG)
-        nudge_row.grid(row=4, column=0, sticky="ew", padx=8, pady=(0, 2))
-        self.nudge_row = nudge_row
-        ctk.CTkLabel(nudge_row, text="Grow by 1 px", text_color=MUTED).pack(side="left")
-        self._button(nudge_row, "←", lambda: self._nudge("w", True), width=42).pack(side="left", padx=(6, 0))
-        self._button(nudge_row, "→", lambda: self._nudge("e", True), width=42).pack(side="left", padx=(4, 0))
-        self._button(nudge_row, "↑", lambda: self._nudge("n", True), width=42).pack(side="left", padx=(4, 0))
-        self._button(nudge_row, "↓", lambda: self._nudge("s", True), width=42).pack(side="left", padx=(4, 0))
-        ctk.CTkLabel(nudge_row, text="Shrink by 1 px", text_color=MUTED).pack(side="left", padx=(12, 0))
-        self._button(nudge_row, "←", lambda: self._nudge("w", False), width=42).pack(side="left", padx=(6, 0))
-        self._button(nudge_row, "→", lambda: self._nudge("e", False), width=42).pack(side="left", padx=(4, 0))
-        self._button(nudge_row, "↑", lambda: self._nudge("n", False), width=42).pack(side="left", padx=(4, 0))
-        self._button(nudge_row, "↓", lambda: self._nudge("s", False), width=42).pack(side="left", padx=(4, 0))
-        for button, redo in ((self.undo_box_button, False), (self.redo_box_button, True)):
-            for widget in (button, getattr(button, "_canvas", None), getattr(button, "_text_label", None)):
-                if widget is not None:
-                    widget.bind("<Button-3>", lambda event, back=redo: self._box_history_menu(event, redo=back))
 
         self.canvas = ctk.CTkCanvas(preview_wrap, bg="#101010", highlightthickness=0, cursor="hand2")
         self.canvas.grid(row=2, column=0, sticky="nsew", padx=8, pady=4)
@@ -598,6 +627,60 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self.canvas.bind("<Configure>", lambda _event: self._draw_preview())
         self.canvas.bind("<Motion>", self._preview_cursor)
 
+        action_row = ctk.CTkFrame(preview_wrap, fg_color=BG)
+        action_row.grid(row=4, column=0, sticky="ew", padx=8, pady=(0, 2))
+        self.zoom_row = action_row
+        self._button(
+            action_row,
+            "Pass as is",
+            self._pass_as_is,
+            width=84,
+            tip="The selected pictures go in the zip as their own files, using the cuts you see now.",
+        ).pack(side="left")
+        self._button(
+            action_row,
+            "Leave out",
+            self._exclude_cuts_selected,
+            primary=True,
+            width=84,
+            tip="Leave the selected pictures out of the zip. They stay on screen with a dashed red outline.",
+        ).pack(side="left", padx=(4, 0))
+        self._button(
+            action_row,
+            "Quick merge",
+            self._quick_merge,
+            width=92,
+            tip="Join two or more highlighted pictures into one box. The earliest number stays.",
+        ).pack(side="left", padx=(4, 0))
+        self._button(
+            action_row,
+            "Undo",
+            self._undo_last,
+            width=56,
+            tip="Take back the last change on this sheet, including a Quick merge.",
+        ).pack(side="left", padx=(4, 0))
+        self._button(
+            action_row,
+            "History",
+            self._show_change_history,
+            width=72,
+            tip="See every box change on this sheet and undo back to any one of them.",
+        ).pack(side="left", padx=(4, 0))
+        self._button(
+            action_row,
+            "Edit cuts",
+            self._show_sprite_changes,
+            width=80,
+            tip="Open a larger window to zoom, move boxes, split, join, or make a new cut. That window has its own Help.",
+        ).pack(side="left", padx=(4, 0))
+        self._button(
+            action_row,
+            "Reset order",
+            self._ask_reset_order,
+            width=100,
+            tip="Put the numbers back in the original scan order. This asks first.",
+        ).pack(side="left", padx=(4, 0))
+
         self.preview_note = ctk.CTkLabel(
             preview_wrap,
             text="Preview is off. Export will cut the sheets and write the zip files directly.",
@@ -607,7 +690,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self.thumbs = ctk.CTkScrollableFrame(
             preview_wrap,
             orientation="horizontal",
-            height=112,
+            height=160,
             fg_color=PANEL,
             corner_radius=8,
         )
@@ -622,10 +705,6 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self.progress.grid_remove()
         self.status = ctk.CTkLabel(status_bar, text="Ready.", text_color=MUTED, anchor="w")
         self.status.grid(row=0, column=1, sticky="ew")
-        self.bind("<Left>", lambda event: self._nudge_key("w", event))
-        self.bind("<Right>", lambda event: self._nudge_key("e", event))
-        self.bind("<Up>", lambda event: self._nudge_key("n", event))
-        self.bind("<Down>", lambda event: self._nudge_key("s", event))
         self.bind("<Map>", self._on_window_map)
         self.bind("<Unmap>", self._on_window_unmap)
         support = ctk.CTkFrame(status_bar, fg_color="transparent")
@@ -635,8 +714,8 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
 
         self._apply_preview_visibility()
 
-    def _button(self, parent, text, command, primary=False, width=120):
-        return ctk.CTkButton(
+    def _button(self, parent, text, command, primary=False, width=120, tip: str = ""):
+        button = ctk.CTkButton(
             parent,
             text=text,
             command=command,
@@ -647,6 +726,58 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             hover_color=RED_HOVER if primary else "#333333",
             text_color=TEXT,
         )
+        if tip:
+            self._tip(button, tip)
+        return button
+
+    def _tip(self, widget, text: str) -> None:
+        """Show a short note when the mouse rests on this control."""
+        state = {"window": None, "after": None}
+
+        def hide(_event=None) -> None:
+            handle = state.get("after")
+            if handle is not None:
+                try:
+                    widget.after_cancel(handle)
+                except Exception:
+                    pass
+                state["after"] = None
+            window = state.get("window")
+            if window is not None and window.winfo_exists():
+                window.destroy()
+            state["window"] = None
+
+        def popup() -> None:
+            if not widget.winfo_exists():
+                return
+            hide()
+            window = Toplevel(widget)
+            window.overrideredirect(True)
+            window.attributes("-topmost", True)
+            window.configure(bg="#2a1619")
+            Label(
+                window,
+                text=text,
+                bg="#2a1619",
+                fg=TEXT,
+                wraplength=260,
+                justify="left",
+                font=("Segoe UI", 11),
+                padx=8,
+                pady=6,
+            ).pack()
+            window.geometry(f"+{widget.winfo_rootx()}+{widget.winfo_rooty() + widget.winfo_height() + 8}")
+            state["window"] = window
+
+        def schedule(_event=None) -> None:
+            hide()
+            if widget.winfo_exists():
+                state["after"] = widget.after(350, popup)
+
+        targets = [widget, *list(widget.winfo_children())]
+        for target in targets:
+            target.bind("<Enter>", schedule, add="+")
+            target.bind("<Leave>", hide, add="+")
 
     def _check(self, parent, text, variable, command):
         return ctk.CTkCheckBox(
@@ -701,7 +832,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
                 "min_pixels": self.min_pixels,
                 "custom_names": self.custom_names.get(),
                 "preview_before_export": self.preview_on.get(),
-                "keep_both": self.keep_both.get(),
+                "project_name": self.project_name.get(),
                 "bundle_project": self.bundle_project.get(),
                 "include_subfolders": self.include_subfolders.get(),
                 "smart_gaps": self.smart_gaps.get(),
@@ -823,11 +954,15 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
 
     def _clear_result(self, sheet: Sheet) -> None:
         sheet.piece_count = None
+        sheet.piece_total = None
         sheet.suggestion = None
         sheet.suggestion_text = ""
         sheet.error = ""
-        sheet.grouped_boxes = []
-        sheet.group_steps = []
+        sheet.cuts = {}
+        sheet.cut_order = []
+        sheet.next_cut = 1
+        sheet.box_undo = []
+        sheet.box_redo = []
 
     def _choose_color(self) -> None:
         chosen = self._ask_color(self.gap_color, "Gap color")
@@ -869,6 +1004,18 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         box = ctk.CTkTextbox(window, wrap="word", font=("Segoe UI", 14), fg_color=BG, text_color=TEXT)
         box.pack(fill="both", expand=True, padx=12, pady=12)
         box.insert("end", HELP_TEXT)
+        box.configure(state="disabled")
+
+    def _show_edit_help(self) -> None:
+        """Help for the Edit cuts window only."""
+        parent = getattr(self, "_change_window", None) or self
+        window = ctk.CTkToplevel(parent)
+        window.title("Edit cuts help")
+        window.geometry("640x560")
+        window.transient(parent)
+        box = ctk.CTkTextbox(window, wrap="word", font=("Segoe UI", 14), fg_color=BG, text_color=TEXT)
+        box.pack(fill="both", expand=True, padx=12, pady=12)
+        box.insert("end", EDIT_HELP_TEXT)
         box.configure(state="disabled")
 
     def _ask_color(self, current: tuple[int, int, int], title: str) -> tuple[int, int, int] | None:
@@ -1352,19 +1499,19 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             self._queue_preview(self.selected)
 
     def _apply_preview_visibility(self) -> None:
+        if getattr(self, "_hold_main", False):
+            self.canvas.grid_remove()
+            self.thumbs.grid_remove()
+            return
         if self.preview_on.get():
             self.preview_note.grid_forget()
-            self.zoom_row.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 2))
-            self.box_row.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 2))
             self.canvas.grid(row=2, column=0, sticky="nsew", padx=8, pady=4)
             self.zoom_bar.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 2))
-            self.nudge_row.grid(row=4, column=0, sticky="ew", padx=8, pady=(0, 2))
+            self.zoom_row.grid(row=4, column=0, sticky="ew", padx=8, pady=(0, 2))
             self.thumbs.grid(row=5, column=0, sticky="ew", padx=8, pady=(0, 8))
         else:
             self.zoom_row.grid_forget()
-            self.box_row.grid_forget()
             self.zoom_bar.grid_forget()
-            self.nudge_row.grid_forget()
             self.canvas.grid_forget()
             self.thumbs.grid_forget()
             self._hide_suggestion()
@@ -1425,10 +1572,10 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             sheet.suggestion_text = ""
         else:
             sheet.error = ""
-            grouped = apply_grouped_cuts(result.pieces, sheet.grouped_boxes)
-            kept = omit_pieces(grouped, sheet.removed_boxes)
-            sheet.piece_total = len(grouped)
-            sheet.piece_count = len(kept)
+            if not sheet.cuts:
+                sheet.install_scan(result.pieces)
+            sheet.piece_total = len(sheet.cut_order)
+            sheet.piece_count = sheet.exportable_count()
             sheet.suggestion = result.suggestion
             sheet.suggestion_text = result.suggestion_text
         self._style_row(sheet)
@@ -1527,13 +1674,16 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         sheet.error = ""
         self._preview_image = image
         self._raw_pieces = result.pieces
+        if not sheet.cuts:
+            sheet.install_scan(result.pieces)
         shown = self._visible_from(result.pieces, sheet)
         sheet.suggestion = result.suggestion
         sheet.suggestion_text = result.suggestion_text
         self._style_row(sheet)
         self._preview_pieces = shown
-        self._cut_boxes = []
+        self._cut_ids = []
         self._cut_anchor = None
+        self._cut_boxes = []
         self._thumb_focus = None
         self._fit_view = True
         self._pan_x = 0
@@ -1562,16 +1712,26 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
     def _hide_suggestion(self) -> None:
         self.suggest_box.grid_forget()
 
+    def _thumb_host(self):
+        if getattr(self, "_hold_main", False):
+            host = getattr(self, "_change_thumbs", None)
+            if host is not None and host.winfo_exists():
+                return host
+            return None
+        return self.thumbs
+
     def _clear_thumbs(self) -> None:
         self._thumb_token += 1
         self._thumb_pending = []
         self._thumb_columns = {}
-        for child in self.thumbs.winfo_children():
-            child.destroy()
+        host = self._thumb_host()
+        if host is not None:
+            for child in host.winfo_children():
+                child.destroy()
         self._thumb_refs.clear()
 
     def _fill_thumbs(self) -> None:
-        if getattr(self, "_hold_main", False):
+        if self._thumb_host() is None:
             return
         self._clear_thumbs()
         self._thumb_pending = [piece for piece in self._preview_pieces if piece.image is not None]
@@ -1586,27 +1746,42 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         batch = self._thumb_pending[:24]
         self._thumb_pending = self._thumb_pending[24:]
         for piece in batch:
-            box = _piece_box(piece)
-            column = ctk.CTkFrame(self.thumbs, fg_color=BG, corner_radius=6, border_width=2, border_color=BG)
+            host = self._thumb_host()
+            if host is None:
+                return
+            column = ctk.CTkFrame(host, fg_color=BG, corner_radius=6, border_width=2, border_color=BG)
             column.pack(side="left", padx=4, pady=4)
-            self._thumb_columns[box] = column
+            self._thumb_columns[piece.cut_id] = column
             thumb = _fit_thumb(piece.image, 120, 78)
             photo = ctk.CTkImage(light_image=thumb, dark_image=thumb, size=thumb.size)
             self._thumb_refs.append(photo)
             picture = ctk.CTkLabel(column, image=photo, text="")
             picture.pack(padx=4, pady=(4, 0))
-            number = ctk.CTkLabel(column, text="" if getattr(piece, "out", False) else str(piece.number), text_color=RED)
+            number = ctk.CTkLabel(column, text=_cut_badge(piece, self.selected, show_names) or str(piece.number or ""), text_color=RED)
             number.pack()
-            for widget in (column, picture, number):
-                widget.bind("<Button-1>", lambda event, item=piece: self._select_cut(item, event))
+            note = _cut_note(piece, self.selected, show_names)
+            extra = None
+            if note:
+                extra = ctk.CTkLabel(column, text=note, text_color=MUTED, font=ctk.CTkFont(family=FONT_FAMILY, size=11))
+                extra.pack()
+            for widget in (column, picture, number, extra):
+                if widget is None:
+                    continue
+                widget.bind("<Button-1>", lambda event, item=piece: self._thumb_press(event, item))
+                widget.bind("<B1-Motion>", lambda event, item=piece: self._thumb_move(event, item))
+                widget.bind("<ButtonRelease-1>", lambda event, item=piece: self._thumb_release(event, item))
                 widget.bind("<Button-3>", lambda event, item=piece: self._cut_menu(event, item))
-            self._style_thumb(box)
-            if show_names and self.selected is not None:
-                default = f"{stem} -{piece.number}.png"
+            self._style_thumb(piece.cut_id)
+            if show_names and self.selected is not None and not piece.keep_with:
+                zip_number = _export_number(self.selected, piece.cut_id)
+                shown = cut_display_name(stem, self.selected.cut_order, self.selected.cuts, self.selected.custom_names, piece.cut_id)
                 entry = ctk.CTkEntry(column, width=190, fg_color=PANEL, border_color=LINE, text_color=TEXT)
-                entry.insert(0, self.selected.custom_names.get(piece.number, default))
+                entry.insert(0, shown)
+                if not zip_number:
+                    entry.configure(state="disabled")
                 entry.pack(padx=4, pady=(0, 4))
-                entry.bind("<KeyRelease>", lambda _event, number=piece.number, box=entry: self._store_name(number, box))
+                entry.bind("<KeyRelease>", lambda _event, cut_id=piece.cut_id, box=entry: self._store_name(cut_id, box))
+                entry.bind("<FocusOut>", lambda _event, cut_id=piece.cut_id, box=entry: self._store_name(cut_id, box, rewrite=True))
                 entry.bind("<Button-3>", lambda event, item=piece: self._cut_menu(event, item))
         if self._thumb_pending and token == self._thumb_token:
             self.after(1, lambda: self._append_thumbs(token))
@@ -1614,7 +1789,8 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             self._place_thumb_scroll()
 
     def _place_thumb_scroll(self) -> None:
-        canvas = getattr(self.thumbs, "_parent_canvas", None)
+        host = self._thumb_host()
+        canvas = getattr(host, "_parent_canvas", None) if host is not None else None
         if canvas is None:
             return
         canvas.update_idletasks()
@@ -1623,7 +1799,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         if number:
             for piece in self._preview_pieces:
                 if piece.number == number:
-                    column = self._thumb_columns.get(_piece_box(piece))
+                    column = self._thumb_columns.get(piece.cut_id)
                     break
         if column is None:
             canvas.xview_moveto(0)
@@ -1632,9 +1808,107 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         total = span[2] if span else 1
         canvas.xview_moveto(max(0, column.winfo_x() - 8) / max(total, 1))
 
-    def _store_name(self, number: int, entry) -> None:
-        if self.selected is not None:
-            self.selected.custom_names[number] = entry.get()
+    def _thumb_press(self, event, piece) -> None:
+        self._thumb_drag = (piece.cut_id, event.x_root, False)
+
+    def _thumb_move(self, event, piece) -> None:
+        start = getattr(self, "_thumb_drag", None)
+        if start is None or start[0] != piece.cut_id:
+            return
+        if abs(event.x_root - start[1]) > 8:
+            self._thumb_drag = (piece.cut_id, start[1], True)
+
+    def _thumb_release(self, event, piece) -> None:
+        start = getattr(self, "_thumb_drag", None)
+        self._thumb_drag = None
+        if start is None:
+            return
+        if not start[2]:
+            self._select_cut(piece, event)
+            return
+        sheet = self.selected
+        if sheet is None:
+            return
+        target = None
+        for other in self._preview_pieces:
+            column = self._thumb_columns.get(other.cut_id)
+            if column is None:
+                continue
+            left = column.winfo_rootx()
+            right = left + column.winfo_width()
+            if left <= event.x_root <= right:
+                target = other.cut_id
+                break
+        if target is None or target == piece.cut_id:
+            return
+        column = self._thumb_columns.get(target)
+        place = "before"
+        if column is not None:
+            left = column.winfo_rootx()
+            mid = left + column.winfo_width() / 2
+            if event.x_root > mid:
+                place = "after"
+        self._reorder_cut(piece.cut_id, target, place)
+
+    def _reorder_cut(self, cut_id: str, target_id: str, place: str = "before") -> None:
+        sheet = self.selected
+        if sheet is None or cut_id not in sheet.cut_order or target_id not in sheet.cut_order:
+            return
+        from_num = sheet.cut_order.index(cut_id) + 1
+        order = [item for item in sheet.cut_order if item != cut_id]
+        index = order.index(target_id)
+        if place == "after":
+            index += 1
+        order.insert(index, cut_id)
+        to_num = order.index(cut_id) + 1
+        if to_num == from_num:
+            return
+        self._push_box_history(sheet, f"Moved #{from_num} to #{to_num}")
+        sheet.cut_order = order
+        self._thumb_focus = to_num
+        self._refresh_grouped_preview(f"Moved #{from_num} to #{to_num}")
+
+    def _store_name(self, cut_id: str, entry, rewrite: bool = False) -> None:
+        sheet = self.selected
+        if sheet is None:
+            return
+        stem = sheet.path.stem
+        base = name_base(entry.get(), stem)
+        if base:
+            sheet.custom_names[cut_id] = base
+        else:
+            sheet.custom_names.pop(cut_id, None)
+        if rewrite:
+            self._fill_thumbs()
+
+    def _ask_reset_order(self) -> None:
+        sheet = self.selected
+        if sheet is None or not sheet.cut_order:
+            self._set_status("Scan a sheet first, then you can reset the numbers.")
+            return
+        if not messagebox.askyesno(
+            "Reset order?",
+            "Put the numbers back in the original scan order? New cuts stay at the end. Undo can take this back.",
+            parent=getattr(self, "_change_window", None) or self,
+        ):
+            return
+        self._reset_cut_order()
+
+    def _reset_cut_order(self) -> None:
+        sheet = self.selected
+        if sheet is None:
+            return
+        if not sheet.scan_order:
+            sheet.scan_order = list(sheet.cut_order)
+        original = [cut_id for cut_id in sheet.scan_order if cut_id in sheet.cut_order]
+        extras = [cut_id for cut_id in sheet.cut_order if cut_id not in original]
+        next_order = original + extras if original else list(sheet.cut_order)
+        if next_order == sheet.cut_order:
+            self._set_status("The numbers are already in the original order.")
+            return
+        self._push_box_history(sheet, "Reset cut order")
+        sheet.cut_order = next_order
+        self._refresh_grouped_preview("Put the numbers back in the original scan order")
 
     def _apply_window_icon(self) -> None:
         """Use the split-sprite picture on the window, taskbar, and exe."""
@@ -1691,9 +1965,9 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self._draw_job = None
         if getattr(self, "_hold_main", False) or str(self.state()) == "iconic":
             return
-        self.canvas.delete("all")
         image = self._preview_image
         if image is None or not self.preview_on.get():
+            self.canvas.delete("all")
             return
         scale = self._view_scale()
         if scale <= 0:
@@ -1709,55 +1983,47 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         y0 = int(self._pan_y)
         x1 = min(image_w, max(x0 + 1, int(round(self._pan_x + src_w))))
         y1 = min(image_h, max(y0 + 1, int(round(self._pan_y + src_h))))
-        crop = image.crop((x0, y0, x1, y1))
-        framed = Image.alpha_composite(_checker(crop.size, x0, y0), crop)
-        scaled_w = max(1, int(round((x1 - x0) * scale)))
-        scaled_h = max(1, int(round((y1 - y0) * scale)))
-        scaled = framed.resize((scaled_w, scaled_h), Image.Resampling.NEAREST)
-        draw = ImageDraw.Draw(scaled)
-        font = _badge_font()
-        for piece in self._preview_pieces:
-            left = (piece.x - x0) * scale
-            top = (piece.y - y0) * scale
-            right = left + piece.width * scale - 1
-            bottom = top + piece.height * scale - 1
-            if right < 0 or bottom < 0 or left > scaled.width or top > scaled.height:
-                continue
-            identity = _piece_box(piece)
-            chosen = identity in self._cut_boxes
-            locked = self.selected is not None and identity in self.selected.locked_boxes
-            edited = self.selected is not None and identity in self.selected.manual_boxes
-            left_out = getattr(piece, "out", False)
-            if locked:
-                outline, width = LOCK, 3
-            elif edited:
-                outline, width = EDIT, 2
-            elif chosen:
-                outline, width = WARN, 3
-            elif self.selected is not None and identity in self.selected.passed_boxes:
-                outline, width = PASS, 3
-            else:
-                outline, width = RED, 2
-            draw.rectangle((left, top, right, bottom), outline=outline, width=width)
-            if left_out:
-                draw.rectangle((left + 3, top + 3, right - 3, bottom - 3), outline=outline, width=1)
-            if chosen and len(self._cut_boxes) == 1 and self.selected is not None and identity in self.selected.unlocked_boxes:
-                handle = 5
-                for hx, hy in ((left, top), (right, top), (left, bottom), (right, bottom)):
-                    draw.rectangle((hx - handle, hy - handle, hx + handle, hy + handle), fill=WARN)
-            if left_out:
-                continue
-            label = str(piece.number)
-            text_box = draw.textbbox((0, 0), label, font=font)
-            text_w = text_box[2] - text_box[0]
-            text_h = text_box[3] - text_box[1]
-            badge = (left + 2, top + 2, left + text_w + 10, top + text_h + 8)
-            draw.rectangle(badge, fill=RED)
-            draw.text((left + 6, top + 4), label, fill="white", font=font)
-        offset_x = int((view_w - image_w * scale) / 2) if image_w * scale < view_w - 1 else 0
-        offset_y = int((view_h - image_h * scale) / 2) if image_h * scale < view_h - 1 else 0
+        try:
+            crop = image.crop((x0, y0, x1, y1))
+            scaled_w = max(1, int(round((x1 - x0) * scale)))
+            scaled_h = max(1, int(round((y1 - y0) * scale)))
+            scaled = crop.resize((scaled_w, scaled_h), Image.Resampling.NEAREST)
+            if scaled.mode != "RGBA":
+                scaled = scaled.convert("RGBA")
+            framed = Image.alpha_composite(_checker((scaled_w, scaled_h), int(x0 * scale), int(y0 * scale)), scaled)
+            draw = ImageDraw.Draw(framed)
+            font = _badge_font()
+            for piece in self._preview_pieces:
+                left = (piece.x - x0) * scale
+                top = (piece.y - y0) * scale
+                right = left + piece.width * scale - 1
+                bottom = top + piece.height * scale - 1
+                if right < 0 or bottom < 0 or left > framed.width or top > framed.height:
+                    continue
+                outline, width, dashed = _cut_style(piece, piece.cut_id in self._cut_ids)
+                draw.rectangle((left, top, right, bottom), outline=outline, width=width)
+                if dashed:
+                    draw.rectangle((left + 3, top + 3, right - 3, bottom - 3), outline=outline, width=1)
+                if piece.locked:
+                    draw.rectangle((left + 3, top + 3, right - 3, bottom - 3), outline=PIN, width=2)
+                label = _cut_badge(piece, self.selected, self.custom_names.get())
+                if not label:
+                    continue
+                text_box = draw.textbbox((0, 0), label, font=font)
+                text_w = text_box[2] - text_box[0]
+                text_h = text_box[3] - text_box[1]
+                badge = (left + 2, top + 2, left + text_w + 10, top + text_h + 8)
+                draw.rectangle(badge, fill=outline)
+                draw.text((left + 6, top + 4), label, fill="white", font=font)
+            offset_x = int((view_w - image_w * scale) / 2) if image_w * scale < view_w - 1 else 0
+            offset_y = int((view_h - image_h * scale) / 2) if image_h * scale < view_h - 1 else 0
+            photo = ImageTk.PhotoImage(framed)
+        except Exception as exc:
+            self._set_status(f"Could not draw the sheet preview. {exc}")
+            return
         self._view_origin = (offset_x, offset_y, scale)
-        self._photo = ImageTk.PhotoImage(scaled)
+        self._photo = photo
+        self.canvas.delete("all")
         self.canvas.create_image(offset_x, offset_y, anchor="nw", image=self._photo)
 
     def _pan_press(self, event) -> None:
@@ -1798,6 +2064,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
                 if piece is not None:
                     self._select_cut(piece, state=state)
                 elif not (state & 0x0001 or state & 0x0004):
+                    self._cut_ids = []
                     self._cut_boxes = []
                     self._cut_anchor = None
                     self._style_cut_selection()
@@ -1851,64 +2118,63 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         if self.busy:
             return
         flags = event.state if state is None and event is not None else (state or 0)
-        box = _piece_box(piece)
-        order = [_piece_box(item) for item in self._preview_pieces]
+        cut_id = piece.cut_id
+        order = [item.cut_id for item in self._preview_pieces]
         shift = bool(flags & 0x0001)
         ctrl = bool(flags & 0x0004)
-        if shift and self._cut_anchor in order and box in order:
+        if shift and self._cut_anchor in order and cut_id in order:
             start = order.index(self._cut_anchor)
-            end = order.index(box)
+            end = order.index(cut_id)
             low, high = sorted((start, end))
-            self._cut_boxes = order[low : high + 1]
+            self._cut_ids = order[low : high + 1]
         elif ctrl:
-            if box in self._cut_boxes:
-                self._cut_boxes = [item for item in self._cut_boxes if item != box]
+            if cut_id in self._cut_ids:
+                self._cut_ids = [item for item in self._cut_ids if item != cut_id]
             else:
-                self._cut_boxes.append(box)
-            self._cut_anchor = box
+                self._cut_ids.append(cut_id)
+            self._cut_anchor = cut_id
         else:
-            self._cut_boxes = [box]
-            self._cut_anchor = box
+            self._cut_ids = [cut_id]
+            self._cut_anchor = cut_id
+        self._cut_boxes = list(self._cut_ids)
+        if getattr(self, "_hold_main", False):
+            self._change_picks = set(self._cut_ids)
+            self._change_anchor = self._cut_anchor
         self._style_cut_selection()
 
     def _style_cut_selection(self) -> None:
-        for box in list(self._thumb_columns):
-            self._style_thumb(box)
-        self._draw_preview()
-        self._show_sizes()
-        count = len(self._cut_boxes)
+        for cut_id in list(self._thumb_columns):
+            self._style_thumb(cut_id)
+        if getattr(self, "_hold_main", False):
+            self._paint_change_view()
+        else:
+            self._draw_preview()
+        count = len(self._cut_ids)
         if count > 1:
-            self._set_status(f"{count} pictures selected. Merge 2+ joins them, Pass as is keeps each file, or Exclude leaves them out of the zip.")
+            self._set_status(f"{count} pictures selected. Quick merge joins them, or open Edit cuts to change boxes.")
         elif count == 1:
-            self._set_status("1 picture selected. Unlock its box before dragging a corner.")
+            self._set_status("1 picture selected. Open Edit cuts to move the box, or leave it out of the zip.")
 
-    def _style_thumb(self, box: tuple) -> None:
-        column = self._thumb_columns.get(box)
+    def _style_thumb(self, cut_id: str) -> None:
+        column = self._thumb_columns.get(cut_id)
         if column is None:
             return
-        sheet = self.selected
-        if box in self._cut_boxes:
-            color = WARN
-        elif sheet is not None and box in sheet.locked_boxes:
-            color = LOCK
-        elif sheet is not None and box in sheet.manual_boxes:
-            color = EDIT
-        elif sheet is not None and box in sheet.passed_boxes:
-            color = PASS
-        else:
-            color = BG
-        column.configure(border_color=color)
+        piece = next((item for item in self._preview_pieces if item.cut_id == cut_id), None)
+        if piece is None:
+            return
+        outline, _width, _dashed = _cut_style(piece, cut_id in self._cut_ids)
+        column.configure(border_color=GOLD if cut_id in self._cut_ids else outline if outline != RED else BG)
 
     def _cut_menu(self, event, piece) -> None:
         if self.busy or self.selected is None:
             return
-        if piece is not None:
-            box = _piece_box(piece)
-            if box not in self._cut_boxes:
-                self._cut_boxes = [box]
-                self._cut_anchor = box
-                self._style_cut_selection()
-        targets = [box for box in self._cut_boxes if any(_piece_box(item) == box for item in self._preview_pieces)]
+        if piece is not None and piece.cut_id not in self._cut_ids:
+            self._cut_ids = [piece.cut_id]
+            self._cut_anchor = piece.cut_id
+            self._cut_boxes = list(self._cut_ids)
+            self._style_cut_selection()
+        if not self._cut_ids:
+            return
         menu = Menu(
             self,
             tearoff=0,
@@ -1918,94 +2184,14 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             activeforeground=TEXT,
             font=("Silkscreen", 10),
         )
-        if len(targets) > 1:
-            menu.add_command(
-                label=f"Merge {len(targets)} into the picture",
-                command=lambda boxes=list(targets): self._group_cuts(boxes),
-            )
-            menu.add_command(
-                label=f"Exclude {len(targets)} from zip",
-                command=lambda boxes=list(targets): self._exclude_cuts(boxes),
-            )
-        elif len(targets) == 1:
-            number = next(item.number for item in self._preview_pieces if _piece_box(item) == targets[0])
-            menu.add_command(
-                label=f"Merge {number} into the picture",
-                command=lambda boxes=list(targets): self._group_cuts(boxes),
-            )
-            menu.add_command(
-                label=f"Exclude cut {number} from zip",
-                command=lambda boxes=list(targets): self._exclude_cuts(boxes),
-            )
-        if self.selected.grouped_boxes:
-            menu.add_command(label="Undo last merge or exclude", command=self._undo_group)
-        if menu.index("end") is None:
-            return
+        menu.add_command(label="Leave out of zip", command=self._exclude_cuts_selected)
+        menu.add_command(label="Pass as is", command=self._pass_as_is)
+        menu.add_command(label="Edit cuts", command=self._show_sprite_changes)
         menu.tk_popup(event.x_root, event.y_root)
 
-    def _group_cuts(self, boxes: list[tuple[int, int, int, int]]) -> None:
-        sheet = self.selected
-        if sheet is None or not self._raw_pieces or not boxes:
-            self._set_status("Select a cut first.")
-            return
-        # Smallest first, and don't let one selected cut swallow another.
-        ordered = sorted(boxes, key=lambda box: box[2] * box[3])
-        pending = list(sheet.grouped_boxes)
-        current = apply_grouped_cuts(self._raw_pieces, pending)
-        added = 0
-        skipped = 0
-        for box in ordered:
-            if box in pending:
-                continue
-            updated = group_cut_into_parent(current, box, skip_boxes=ordered)
-            if updated is None:
-                skipped += 1
-                continue
-            pending.append(box)
-            current = updated
-            added += 1
-        if added == 0:
-            self._set_status("Those cuts are already the largest pictures, so there is nowhere to group them.")
-            return
-        self._push_box_history(sheet, "Merged into the larger picture")
-        sheet.grouped_boxes = pending
-        sheet.group_steps.append(added)
-        sheet.undo.append(("group", added))
-        numbers = [piece.number for piece in self._preview_pieces if _piece_box(piece) in set(pending[-added:])]
-        self._thumb_focus = max(1, min(numbers) - 1) if numbers else None
-        note = f"Merged {added} piece(s) into the larger picture."
-        if skipped:
-            note += f" Left {skipped} with no larger picture."
-        self._cut_boxes = []
-        self._cut_anchor = None
-        self._refresh_grouped_preview(note)
-
-    def _undo_group(self) -> None:
-        sheet = self.selected
-        if sheet is not None and sheet.box_undo:
-            _snapshot, label = sheet.box_undo[-1]
-            if label in ("Merged into the larger picture", "Excluded from the zip"):
-                self._undo_box()
-                return
-        if sheet is None or not sheet.undo:
-            self._set_status("Nothing to undo.")
-            return
-        kind, payload = sheet.undo.pop()
-        if kind == "exclude":
-            gone = set(payload)
-            sheet.removed_boxes = [box for box in sheet.removed_boxes if box not in gone]
-            note = "Put those cuts back in the zip."
-        else:
-            count = payload
-            if sheet.group_steps:
-                sheet.group_steps.pop()
-            for _ in range(min(count, len(sheet.grouped_boxes))):
-                sheet.grouped_boxes.pop()
-            noun = "cuts" if count != 1 else "cut"
-            note = f"Put the last {noun} back on their own."
-        self._cut_boxes = []
-        self._cut_anchor = None
-        self._refresh_grouped_preview(note)
+    def _chosen_pieces(self):
+        chosen = {cut_id for cut_id in self._cut_ids}
+        return [piece for piece in self._preview_pieces if piece.cut_id in chosen]
 
     def _refresh_grouped_preview(self, note: str) -> None:
         sheet = self.selected
@@ -2018,154 +2204,56 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             self._rebuild_list()
         self._fill_thumbs()
         self._draw_preview()
+        if getattr(self, "_hold_main", False):
+            self._sync_edit_window()
         self._set_status(f"{note} {_piece_label(sheet)}.")
 
-    def _remove_cut_selected(self) -> None:
-        self._group_cuts(list(self._cut_boxes))
-
     def _exclude_cuts_selected(self) -> None:
-        self._exclude_cuts(list(self._cut_boxes))
+        self._leave_out(self._cut_ids)
 
-    def _exclude_cuts(self, boxes: list[tuple[int, int, int, int]]) -> None:
+    def _leave_out(self, cut_ids) -> None:
         sheet = self.selected
-        if sheet is None or not boxes:
+        ids = [cut_id for cut_id in cut_ids if cut_id in (sheet.cuts if sheet else {})]
+        if sheet is None or not ids:
             self._set_status("Select a cut first.")
             return
-        self._push_box_history(sheet, "Excluded from the zip")
-        sheet.removed_boxes = [*sheet.removed_boxes, *boxes]
-        sheet.passed_boxes.difference_update(boxes)
-        sheet.undo.append(("exclude", list(boxes)))
-        self._cut_boxes = []
-        self._cut_anchor = None
-        self._thumb_focus = None
-        noun = "cut" if len(boxes) == 1 else "cuts"
-        numbers = [piece.number for piece in self._preview_pieces if _piece_box(piece) in set(boxes)]
-        self._thumb_focus = max(1, min(numbers) - 1) if numbers else None
-        self._refresh_grouped_preview(f"Excluded {len(boxes)} {noun} from the zip.")
-
-    def _show_changes(self) -> None:
-        sheet = self.selected
-        if sheet is None:
-            self._set_status("Open a sheet first.")
-            return
-        window = ctk.CTkToplevel(self)
-        window.title("Changes")
-        window.geometry("460x480")
-        window.transient(self)
-        ctk.CTkLabel(
-            window,
-            text="Remove cut puts a piece back into the larger picture. Left out of zip drops it from the download. Select any lines and restore them. Ctrl and Shift select more than one.",
-            wraplength=420,
-            justify="left",
-        ).pack(fill="x", padx=12, pady=(12, 6))
-        listing = Listbox(window, selectmode="extended", activestyle="dotbox")
-        entries = []
-        for identity, box in sheet.manual_boxes.items():
-            entries.append(("manual", identity))
-            listing.insert("end", f"Box edit    {box[2]}x{box[3]} at {box[0]},{box[1]}")
-        for identity in sheet.splits:
-            entries.append(("split", identity))
-            listing.insert("end", "Split into two pictures")
-        for keep, drop in sheet.sprite_merges:
-            entries.append(("merge", (keep, drop)))
-            listing.insert("end", "Merged two pictures")
-        for item in sheet.grouped_boxes:
-            entries.append(("group", item))
-            listing.insert("end", f"Remove cut    {item[2]}x{item[3]} at {item[0]},{item[1]}")
-        for item in sheet.removed_boxes:
-            entries.append(("exclude", item))
-            listing.insert("end", f"Left out of zip    {item[2]}x{item[3]} at {item[0]},{item[1]}")
-        if not entries:
-            listing.insert("end", "No changes on this sheet yet.")
-        listing.pack(fill="both", expand=True, padx=12, pady=6)
-
-        def restore() -> None:
-            chosen = [entries[index] for index in listing.curselection() if index < len(entries)]
-            if not chosen:
-                return
-            groups = {item for kind, item in chosen if kind == "group"}
-            removed = {item for kind, item in chosen if kind == "exclude"}
-            manuals = {item for kind, item in chosen if kind == "manual"}
-            splits = {item for kind, item in chosen if kind == "split"}
-            merges = {item for kind, item in chosen if kind == "merge"}
-            if groups:
-                sheet.grouped_boxes = [item for item in sheet.grouped_boxes if item not in groups]
-            if removed:
-                sheet.removed_boxes = [item for item in sheet.removed_boxes if item not in removed]
-            if manuals:
-                sheet.manual_boxes = {key: value for key, value in sheet.manual_boxes.items() if key not in manuals}
-            if splits:
-                sheet.splits = {key: value for key, value in sheet.splits.items() if key not in splits}
-            if merges:
-                sheet.sprite_merges = [item for item in sheet.sprite_merges if item not in merges]
-            sheet.undo.clear()
-            self._thumb_focus = None
-            self._refresh_grouped_preview("Restored the selected changes.")
-            window.destroy()
-
-        ctk.CTkButton(window, text="Restore selected", command=restore, fg_color=RED, hover_color=RED_HOVER).pack(pady=(0, 12))
+        self._push_box_history(sheet, "Left out of zip")
+        for cut_id in ids:
+            sheet.cuts[cut_id]["out"] = True
+            sheet.cuts[cut_id]["passed"] = False
+        noun = "cut" if len(ids) == 1 else "cuts"
+        self._refresh_grouped_preview(f"Left {len(ids)} {noun} out of the zip.")
+        self._sync_edit_window()
 
     def _visible_from(self, pieces, sheet: Sheet):
-        from cutter import Piece
-
-        image = self._preview_image
-        fresh = []
-        for piece in pieces:
-            box = piece.source_box or (piece.x, piece.y, piece.width, piece.height)
-            x, y, width, height = box
-            cropped = image.crop((x, y, x + width, y + height)) if image is not None else piece.image
-            fresh.append(Piece(piece.number, x, y, width, height, cropped, box))
-        grouped = apply_grouped_cuts(fresh, sheet.grouped_boxes)
-        if self._preview_image is not None:
-            grouped = apply_manual_boxes(grouped, self._preview_image, sheet.manual_boxes)
-        grouped = self._apply_splits_and_merges(grouped, sheet)
-        gone = set(sheet.removed_boxes)
-        shown = []
-        for piece in grouped:
-            piece.out = _piece_box(piece) in gone
-            shown.append(piece)
-        number = 1
-        for piece in shown:
-            if piece.out:
-                piece.number = 0
-            else:
-                piece.number = number
-                number += 1
-        sheet.piece_total = len(shown)
-        sheet.piece_count = number - 1
+        if not sheet.cuts and pieces:
+            sheet.install_scan(pieces)
+        shown = pieces_from_cuts(self._preview_image, sheet.cut_order, sheet.cuts)
+        sheet.piece_total = len(sheet.cut_order)
+        sheet.piece_count = sheet.exportable_count()
         return shown
 
-    def _set_size_text(self, text: str) -> None:
-        """Show the size line, and let a drag move it when the window is narrow."""
-        self.size_canvas.itemconfigure(self._size_text, text=text)
-        self.size_canvas.coords(self._size_text, 4, 14)
-        box = self.size_canvas.bbox(self._size_text) or (0, 0, 10, 28)
-        self.size_canvas.configure(scrollregion=(0, 0, box[2] + 12, 28))
-        self.size_canvas.xview_moveto(0)
-
-    def _show_sizes(self) -> None:
-        """Pixel sizes for the one or two pictures picked on the bottom row."""
-        chosen = [
-            piece
-            for piece in self._preview_pieces
-            if _piece_box(piece) in self._cut_boxes
-        ]
-        if not chosen:
-            self._set_size_text("Select pictures below. Drag this line if the sizes do not fit.")
+    def _set_main_preview_held(self, held: bool) -> None:
+        """Hide the main sheet while Edit cuts is open so only one canvas is drawn."""
+        self._hold_main = held
+        if held:
+            self.canvas.grid_remove()
+            self.thumbs.grid_remove()
+            self.canvas.delete("all")
             return
-        self._set_size_text("    ".join(_size_line(piece) for piece in chosen))
+        self._apply_preview_visibility()
 
     def _show_sprite_changes(self) -> None:
         """Zoomed editor. The main sheet stays put until Confirm or Cancel."""
         image = self._preview_image
         sheet = self.selected
-        chosen = [piece for piece in self._preview_pieces if _piece_box(piece) in self._cut_boxes]
-        if image is None or sheet is None or not chosen:
-            self._set_status("Select one or more pictures, then open Sprite changes.")
+        if image is None or sheet is None or not self._preview_pieces:
+            self._set_status("Open a sheet first, then Edit cuts.")
             return
-        self._change_ids = [_piece_box(piece) for piece in chosen]
-        self._change_id = self._change_ids[0]
-        self._change_picks = set(self._change_ids)
+        self._change_ids = [piece.cut_id for piece in self._preview_pieces]
+        self._change_picks = set(self._cut_ids)
+        self._change_anchor = self._cut_ids[0] if self._cut_ids else None
+        self._change_id = self._cut_ids[0] if self._cut_ids else (self._change_ids[0] if self._change_ids else None)
         self._change_zoom = 1.0
         self._change_pan = [0.0, 0.0]
         self._change_drag_state = None
@@ -2173,60 +2261,95 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self._change_snapshot = self._box_state(sheet)
         self._change_undo_snap = list(sheet.box_undo)
         self._change_redo_snap = list(sheet.box_redo)
-        self._hold_main = True
+        self._set_main_preview_held(True)
         window = ctk.CTkToplevel(self)
-        window.title("Sprite changes")
-        window.geometry("960x760")
-        window.minsize(720, 520)
+        window.title("Edit cuts")
+        window.geometry("1040x820")
+        window.minsize(780, 560)
         window.transient(self)
         window.configure(fg_color=BG)
         window.protocol("WM_DELETE_WINDOW", self._change_close)
         self._change_window = window
+        head = ctk.CTkFrame(window, fg_color=BG)
+        head.pack(fill="x", padx=12, pady=(12, 2))
         ctk.CTkLabel(
-            window,
-            text="The red line is the cut right now. The picture keeps going outside that line. Drag an edge to take in more of the sheet or leave some out, up to the whole sheet. Scroll or use Zoom to get closer. Drag the picture to move around. The main sheet waits until you press Confirm or Cancel.",
+            head,
+            text="Change the boxes, or make a new one. Gold means selected. The small pictures below work like the main page.",
             text_color=MUTED,
-            wraplength=920,
+            wraplength=860,
             justify="left",
             anchor="w",
-        ).pack(fill="x", padx=12, pady=(12, 4))
-        picker = ctk.CTkFrame(window, fg_color=BG)
-        picker.pack(fill="x", padx=12, pady=(0, 4))
-        ctk.CTkLabel(picker, text="Numbers", text_color=MUTED).pack(side="left")
-        self._change_picker = ctk.CTkFrame(picker, fg_color=BG)
-        self._change_picker.pack(side="left", fill="x", expand=True)
+        ).pack(side="left", fill="x", expand=True)
+        self._button(head, "Help", self._show_edit_help, width=80, tip="How this window works: zoom, pan, move boxes, and each button.").pack(side="right")
         ctk.CTkLabel(
             window,
-            text="A lit number is included. Split uses the sprite on screen and puts the new half on the next number. Merge joins the lit numbers into the earliest one.",
+            text="Gold = selected. Red = cut. Cyan = new. Orange = split. Dashed red = left out of the zip. Sky dashed = locked. Green = kept with another. Purple = pass as is.",
             text_color=MUTED,
-            wraplength=920,
+            wraplength=1000,
             justify="left",
             anchor="w",
         ).pack(fill="x", padx=12, pady=(0, 4))
         actions = ctk.CTkFrame(window, fg_color=BG)
         actions.pack(fill="x", padx=12, pady=(0, 4))
-        self._button(actions, "Split —", lambda: self._change_split(False), width=84).pack(side="left")
-        self._button(actions, "Split |", lambda: self._change_split(True), width=76).pack(side="left", padx=(6, 0))
-        self._button(actions, "Merge", self._change_merge, width=80).pack(side="left", padx=(6, 0))
-        self._button(actions, "Undo", lambda: self._change_history(False), width=72).pack(side="left", padx=(12, 0))
-        self._button(actions, "Redo", lambda: self._change_history(True), width=72).pack(side="left", padx=(6, 0))
-        ctk.CTkLabel(actions, text="Zoom", text_color=MUTED).pack(side="left", padx=(16, 6))
+        self._button(actions, "New cut", self._new_cut, width=88, tip="Make a new box, about the average size of the current cuts, then pick its number.").pack(side="left")
+        self._button(actions, "Split across", lambda: self._change_split(True), width=110, tip="Cut the one selected box in half, left and right.").pack(side="left", padx=(6, 0))
+        self._button(actions, "Split down", lambda: self._change_split(False), width=100, tip="Cut the one selected box in half, top and bottom.").pack(side="left", padx=(6, 0))
+        self._button(actions, "Merge", self._change_merge, width=80, tip="Turn two or more selected boxes into one box that covers them all. Undo and Redo can take this back.").pack(side="left", padx=(6, 0))
+        self._button(actions, "Keep with", self._keep_with, width=96, tip="Pick two cuts: a leftover and the sprite it belongs with. The leftover is not its own file.").pack(side="left", padx=(6, 0))
+        self._button(actions, "Lock", lambda: self._set_cut_lock(True), width=72, tip="Lock the selected boxes. A locked box keeps its size and cannot be dragged.").pack(side="left", padx=(6, 0))
+        self._button(actions, "Unlock", lambda: self._set_cut_lock(False), width=88, tip="Unlock the selected boxes so you can move or resize them again.").pack(side="left", padx=(6, 0))
+        self._button(actions, "Leave out", self._exclude_cuts_selected, width=96, tip="Leave the selected cuts out of the zip. They stay on screen with a dashed red outline.").pack(side="left", padx=(6, 0))
+        self._button(actions, "Pass as is", self._pass_as_is, width=96, tip="The selected cuts go in the zip as their own files, using the boxes you see now.").pack(side="left", padx=(6, 0))
+        self._button(actions, "Undo", lambda: self._change_history(False), width=72, tip="Take back the last edit in this window.").pack(side="left", padx=(12, 0))
+        self._button(actions, "Redo", lambda: self._change_history(True), width=72, tip="Put back an edit you just undid.").pack(side="left", padx=(6, 0))
+        self._button(actions, "Revert", self._revert_boxes, width=80, tip="Put the selected cuts back to the first scan. Other cuts stay as they are.").pack(side="left", padx=(6, 0))
+        self._button(actions, "Change history", self._show_change_history, width=130, tip="See every box change on this sheet and undo back to any one of them.").pack(side="left", padx=(6, 0))
+        look = ctk.CTkFrame(window, fg_color=BG)
+        look.pack(fill="x", padx=12, pady=(0, 4))
+        ctk.CTkLabel(look, text="Zoom", text_color=MUTED).pack(side="left")
         self._change_zoom_var = ctk.DoubleVar(value=1.0)
-        ctk.CTkSlider(actions, from_=0.25, to=8, variable=self._change_zoom_var, command=self._change_zoom_set, width=160).pack(side="left")
-        self._change_canvas = ctk.CTkCanvas(window, bg="#101010", highlightthickness=0)
+        ctk.CTkSlider(look, from_=0.25, to=8, variable=self._change_zoom_var, command=self._change_zoom_set, width=180).pack(side="left", padx=(8, 0))
+        self._button(look, "Reset size", self._change_reset_view, width=100, tip="Show the whole sheet again.").pack(side="left", padx=(8, 0))
+        ctk.CTkLabel(
+            window,
+            text="Drag to move the view, even over other boxes. A tap or click on a box selects it. Gold means selected. Use the small pictures below like the main page.",
+            text_color=MUTED,
+            wraplength=1000,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", padx=12, pady=(0, 2))
+        self._change_canvas = ctk.CTkCanvas(window, bg="#101010", highlightthickness=0, cursor="hand2")
         self._change_canvas.pack(fill="both", expand=True, padx=12, pady=8)
         self._change_canvas.bind("<ButtonPress-1>", self._change_press)
         self._change_canvas.bind("<B1-Motion>", self._change_drag)
         self._change_canvas.bind("<ButtonRelease-1>", self._change_release)
+        self._change_canvas.bind("<ButtonPress-2>", self._change_pan_press)
+        self._change_canvas.bind("<B2-Motion>", self._change_pan_drag)
+        self._change_canvas.bind("<ButtonRelease-2>", self._change_pan_release)
         self._change_canvas.bind("<Motion>", self._change_cursor)
         self._change_canvas.bind("<MouseWheel>", self._change_wheel)
+        self._change_canvas.bind("<Button-4>", lambda event: self._change_wheel_step(event, 1.12))
+        self._change_canvas.bind("<Button-5>", lambda event: self._change_wheel_step(event, 1 / 1.12))
         self._change_canvas.bind("<Configure>", self._change_resized)
-        self._change_note = ctk.CTkLabel(window, text="", text_color=TEXT, anchor="w")
-        self._change_note.pack(fill="x", padx=12, pady=(0, 4))
+        picks = ctk.CTkFrame(window, fg_color=BG)
+        picks.pack(fill="x", padx=12, pady=(0, 2))
+        self._button(picks, "Select all", self._change_select_all, width=96, tip="Select every picture so you can edit them together.").pack(side="left")
+        self._button(picks, "Select none", self._change_select_none, width=108, tip="Clear the selection. Nothing is being edited.").pack(side="left", padx=(6, 0))
+        self._button(picks, "Reset order", self._ask_reset_order, width=100, tip="Put the numbers back in the original scan order. This asks first.").pack(side="left", padx=(6, 0))
+        self._change_thumbs = ctk.CTkScrollableFrame(
+            window,
+            orientation="horizontal",
+            height=160,
+            fg_color=PANEL,
+            corner_radius=8,
+        )
+        self._change_thumbs.pack(fill="x", padx=12, pady=(0, 8))
+        self._change_note = None
         self._change_decide = ctk.CTkFrame(window, fg_color=BG)
-        self._button(self._change_decide, "Confirm", self._change_confirm, width=100).pack(side="left")
-        self._button(self._change_decide, "Cancel", self._change_cancel, width=100).pack(side="left", padx=(8, 0))
-        self._rebuild_change_picker()
+        self._change_decide.pack(fill="x", padx=12, pady=(0, 12))
+        self._button(self._change_decide, "Confirm", self._change_confirm, width=100, tip="Keep these edits and go back to the sheet.").pack(side="left")
+        self._button(self._change_decide, "Cancel", self._change_cancel, width=100, tip="Throw away the edits in this window and go back.").pack(side="left", padx=(8, 0))
+        self._fill_thumbs()
         self._paint_change_view()
 
     def _mark_change_dirty(self) -> None:
@@ -2239,7 +2362,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         if getattr(self, "_change_dirty", False):
             window = getattr(self, "_change_window", None)
             apply = messagebox.askyesno(
-                "Sprite changes",
+                "Edit cuts",
                 "Apply these changes to the sheet?",
                 parent=window,
             )
@@ -2248,39 +2371,35 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             else:
                 self._change_cancel()
             return
-        self._hold_main = False
-        window = getattr(self, "_change_window", None)
-        if window is not None and window.winfo_exists():
-            window.destroy()
+        self._close_change_window(True)
 
     def _change_confirm(self) -> None:
-        self._hold_main = False
         self._change_dirty = False
         sheet = self.selected
         if sheet is not None:
             self._preview_pieces = self._visible_from(self._raw_pieces, sheet)
-        self._fill_thumbs()
-        self._draw_preview()
-        self._show_sizes()
-        window = getattr(self, "_change_window", None)
-        if window is not None and window.winfo_exists():
-            window.destroy()
+        self._close_change_window(True)
 
     def _change_cancel(self) -> None:
         sheet = self.selected
-        self._hold_main = False
         self._change_dirty = False
         if sheet is not None and getattr(self, "_change_snapshot", None) is not None:
             self._apply_box_state(sheet, self._change_snapshot)
             sheet.box_undo = list(self._change_undo_snap)
             sheet.box_redo = list(self._change_redo_snap)
             self._preview_pieces = self._visible_from(self._raw_pieces, sheet)
-            self._fill_thumbs()
-            self._draw_preview()
-            self._show_sizes()
+        self._close_change_window(True)
+
+    def _close_change_window(self, refresh: bool) -> None:
         window = getattr(self, "_change_window", None)
+        self._change_thumbs = None
+        self._change_window = None
         if window is not None and window.winfo_exists():
             window.destroy()
+        self._set_main_preview_held(False)
+        if refresh:
+            self._fill_thumbs()
+            self._draw_preview()
 
     def _change_resized(self, event) -> None:
         canvas = getattr(self, "_change_canvas", None)
@@ -2298,12 +2417,23 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self._change_zoom = float(value)
         self._paint_change_view()
 
+    def _change_reset_view(self) -> None:
+        self._change_zoom = 1.0
+        self._change_pan = [0.0, 0.0]
+        self._change_frozen_bounds = None
+        self._change_zoom_lock = True
+        self._change_zoom_var.set(1.0)
+        self._change_zoom_lock = False
+        self._paint_change_view()
+
     def _change_wheel(self, event) -> None:
+        self._change_wheel_step(event, 1.12 if getattr(event, "delta", 0) > 0 else 1 / 1.12)
+
+    def _change_wheel_step(self, event, factor: float) -> None:
         layout = self._change_layout()
         if layout is None:
             return
         _cw, _ch, left, top, _rw, _rh, fit, scale, ox, oy = layout
-        factor = 1.12 if event.delta > 0 else 1 / 1.12
         zoom = max(0.25, min(self._change_zoom * factor, 8))
         img_x = left + (event.x - ox) / scale
         img_y = top + (event.y - oy) / scale
@@ -2317,6 +2447,21 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self._change_zoom_lock = False
         self._paint_change_view()
 
+    def _change_pan_press(self, event) -> None:
+        pan = list(getattr(self, "_change_pan", [0.0, 0.0]))
+        self._change_drag_state = ("pan", event.x, event.y, pan[0], pan[1])
+
+    def _change_pan_drag(self, event) -> None:
+        state = getattr(self, "_change_drag_state", None)
+        if state is None or state[0] != "pan":
+            return
+        _kind, start_x, start_y, pan_x, pan_y = state
+        self._change_pan = [pan_x + event.x - start_x, pan_y + event.y - start_y]
+        self._paint_change_view()
+
+    def _change_pan_release(self, _event) -> None:
+        self._change_drag_state = None
+
     def _change_layout(self):
         """Canvas size, the sheet area on screen, and where it is drawn."""
         canvas = getattr(self, "_change_canvas", None)
@@ -2325,18 +2470,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             return None
         cw = max(canvas.winfo_width(), 200)
         ch = max(canvas.winfo_height(), 160)
-        frozen = getattr(self, "_change_frozen_bounds", None)
-        if frozen is not None:
-            left, top, right, bottom = frozen
-        else:
-            pieces = [item for item in self._preview_pieces if _piece_box(item) in self._change_ids]
-            if not pieces:
-                return None
-            pad = 48
-            left = max(0, min(item.x for item in pieces) - pad)
-            top = max(0, min(item.y for item in pieces) - pad)
-            right = min(image.width, max(item.x + item.width for item in pieces) + pad)
-            bottom = min(image.height, max(item.y + item.height for item in pieces) + pad)
+        left, top, right, bottom = 0, 0, image.width, image.height
         rect_w = max(1, right - left)
         rect_h = max(1, bottom - top)
         fit = min(cw / rect_w, ch / rect_h)
@@ -2347,114 +2481,105 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         return cw, ch, left, top, rect_w, rect_h, fit, scale, ox, oy
 
     def _rebuild_change_picker(self) -> None:
-        frame = getattr(self, "_change_picker", None)
-        if frame is None or not frame.winfo_exists():
+        live = list(self._preview_pieces)
+        self._change_ids = [piece.cut_id for piece in live]
+        self._cut_ids = [item for item in self._change_ids if item in self._change_picks]
+        host = getattr(self, "_change_thumbs", None)
+        if host is None or not host.winfo_exists():
             return
-        for child in frame.winfo_children():
-            child.destroy()
-        live = []
-        for box in self._change_ids:
-            piece = next((item for item in self._preview_pieces if _piece_box(item) == box), None)
-            if piece is not None:
-                live.append(piece)
-        live.sort(key=lambda piece: piece.number or 10**9)
-        self._change_ids = [_piece_box(piece) for piece in live]
-        for piece in live:
-            box = _piece_box(piece)
-            lit = box in self._change_picks
-            self._button(
-                frame,
-                str(piece.number or "out"),
-                lambda item=box: self._toggle_change_piece(item),
-                primary=lit,
-                width=48,
-            ).pack(side="left", padx=(6, 0))
+        if set(self._thumb_columns) == set(self._change_ids):
+            for cut_id in self._change_ids:
+                self._style_thumb(cut_id)
+            return
+        self._fill_thumbs()
 
-    def _toggle_change_piece(self, box) -> None:
-        if box in self._change_picks and box != self._change_id:
-            self._change_picks.discard(box)
-        elif box in self._change_picks and len(self._change_picks) > 1:
-            self._change_picks.discard(box)
+    def _on_number_click(self, event, cut_id: str) -> None:
+        ctrl = bool(event.state & 0x0004)
+        shift = bool(event.state & 0x0001)
+        self._apply_change_select(cut_id, ctrl=ctrl, shift=shift)
+
+    def _drop_change_pick(self, cut_id: str) -> None:
+        self._change_picks.discard(cut_id)
+        self._cut_ids = [item for item in self._change_ids if item in self._change_picks]
+        self._change_id = self._cut_ids[0] if self._cut_ids else None
+        self._rebuild_change_picker()
+        self._paint_change_view()
+
+    def _apply_change_select(self, cut_id: str, ctrl: bool = False, shift: bool = False) -> None:
+        ids = list(self._change_ids)
+        anchor = getattr(self, "_change_anchor", None)
+        if shift and anchor in ids and cut_id in ids:
+            start = ids.index(anchor)
+            end = ids.index(cut_id)
+            low, high = (start, end) if start <= end else (end, start)
+            range_ids = ids[low : high + 1]
+            if range_ids and all(item in self._change_picks for item in range_ids):
+                self._change_picks.difference_update(range_ids)
+            elif ctrl:
+                self._change_picks.update(range_ids)
+            else:
+                self._change_picks = set(range_ids)
+        elif ctrl:
+            if cut_id in self._change_picks:
+                self._change_picks.discard(cut_id)
+            else:
+                self._change_picks.add(cut_id)
+            self._change_anchor = cut_id
         else:
-            self._change_picks.add(box)
-        self._change_id = box
-        self._cut_boxes = [item for item in self._change_ids if item in self._change_picks]
+            self._change_picks = {cut_id}
+            self._change_anchor = cut_id
+        self._change_id = cut_id if cut_id in self._change_picks else (next(iter(self._change_picks), None))
+        self._cut_ids = [item for item in ids if item in self._change_picks]
+        self._rebuild_change_picker()
+        self._paint_change_view()
+
+    def _toggle_change_piece(self, cut_id) -> None:
+        self._apply_change_select(cut_id, ctrl=True)
+
+    def _change_select_all(self) -> None:
+        self._change_picks = {piece.cut_id for piece in self._preview_pieces}
+        self._change_anchor = self._change_ids[0] if self._change_ids else None
+        self._cut_ids = list(self._change_picks)
+        self._rebuild_change_picker()
+        self._paint_change_view()
+
+    def _change_select_none(self) -> None:
+        self._change_picks = set()
+        self._change_anchor = None
+        self._cut_ids = []
         self._rebuild_change_picker()
         self._paint_change_view()
 
     def _change_split(self, vertical: bool) -> None:
-        piece = self._change_piece()
-        sheet = self.selected
-        if piece is None or sheet is None:
-            return
-        identity = _piece_box(piece)
-        before_count = len(self._preview_pieces)
-        self._cut_boxes = [identity]
+        self._cut_ids = [cut_id for cut_id in self._change_ids if cut_id in self._change_picks]
+        before = {piece.cut_id for piece in self._preview_pieces}
         self._split_piece(vertical)
-        if len(self._preview_pieces) == before_count:
-            return
-        added = list(sheet.splits.get(identity, ()))
-        ids = []
-        for box in self._change_ids:
-            if box == identity:
-                ids.extend(added)
-            else:
-                ids.append(box)
-        if identity not in self._change_ids:
-            ids.extend(added)
-        self._change_ids = ids
-        self._change_picks.discard(identity)
-        for box in added:
-            self._change_picks.add(box)
-        self._change_id = added[0] if added else identity
-        self._cut_boxes = [self._change_id]
+        after = {piece.cut_id for piece in self._preview_pieces}
+        self._change_picks.update(after - before)
+        self._change_ids = [piece.cut_id for piece in self._preview_pieces]
         self._mark_change_dirty()
         self._rebuild_change_picker()
         self._paint_change_view()
 
     def _change_merge(self) -> None:
-        picks = [box for box in self._change_ids if box in self._change_picks]
-        if len(picks) < 2:
-            self._set_status("Light two or more numbers, then Merge. The earliest number stays.")
-            return
-        before = {_piece_box(item) for item in self._preview_pieces}
-        self._cut_boxes = picks
-        self._merge_selected()
-        after = {_piece_box(item) for item in self._preview_pieces}
-        removed = before - after
-        self._change_ids = [box for box in self._change_ids if box not in removed]
-        self._change_picks.difference_update(removed)
-        live = [box for box in self._change_ids if box in after]
-        self._change_id = live[0] if live else self._change_id
-        if self._change_id not in self._change_picks and live:
-            self._change_picks.add(self._change_id)
-        self._cut_boxes = [self._change_id]
+        self._cut_ids = [cut_id for cut_id in self._change_ids if cut_id in self._change_picks]
+        self._merge_selected(ask=False)
+        live = {piece.cut_id for piece in self._preview_pieces}
+        self._change_picks = {cut_id for cut_id in self._change_picks if cut_id in live}
+        self._change_ids = [piece.cut_id for piece in self._preview_pieces]
         self._mark_change_dirty()
         self._rebuild_change_picker()
         self._paint_change_view()
 
     def _change_history(self, redo: bool) -> None:
-        before = {_piece_box(item) for item in self._preview_pieces}
         if redo:
             self._redo_box()
         else:
             self._undo_box()
-        after = {_piece_box(item) for item in self._preview_pieces}
-        removed = before - after
-        added = [box for box in after - before]
-        self._change_ids = [box for box in self._change_ids if box not in removed]
-        for box in added:
-            if box not in self._change_ids:
-                self._change_ids.append(box)
-            self._change_picks.add(box)
-        self._change_picks.difference_update(removed)
-        live = {_piece_box(item) for item in self._preview_pieces}
-        self._change_ids = [box for box in self._change_ids if box in live]
-        if self._change_id not in live and self._change_ids:
-            self._change_id = self._change_ids[0]
-        if self._change_id in live:
-            self._change_picks.add(self._change_id)
-        self._cut_boxes = [box for box in self._change_ids if box in self._change_picks] or ([self._change_id] if self._change_id in live else [])
+        live = {piece.cut_id for piece in self._preview_pieces}
+        self._change_ids = [piece.cut_id for piece in self._preview_pieces]
+        self._change_picks = {cut_id for cut_id in self._change_picks if cut_id in live}
+        self._cut_ids = list(self._change_picks)
         self._mark_change_dirty()
         self._rebuild_change_picker()
         self._paint_change_view()
@@ -2463,11 +2588,9 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self._change_id = box
         self._cut_boxes = [box]
         self._paint_change_view()
-        self._draw_preview()
-        self._show_sizes()
 
     def _change_piece(self):
-        return next((piece for piece in self._preview_pieces if _piece_box(piece) == self._change_id), None)
+        return next((piece for piece in self._preview_pieces if piece.cut_id == self._change_id), None)
 
     def _paint_change_view(self) -> None:
         """Draw the loaded sprites large enough to fill this window."""
@@ -2495,81 +2618,161 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self._change_origin = (img_x0, img_y0, scale)
         canvas.delete("all")
         canvas.create_image((crop_left - img_x0) * scale, (crop_top - img_y0) * scale, anchor="nw", image=photo)
-        loaded = [item for item in self._preview_pieces if _piece_box(item) in self._change_ids]
-        show_numbers = len(loaded) > 1
-        focus = self._change_id
+        loaded = list(self._preview_pieces)
         for item in loaded:
             box_left = (item.x - img_x0) * scale
             box_top = (item.y - img_y0) * scale
             box_right = box_left + item.width * scale
             box_bottom = box_top + item.height * scale
-            canvas.create_rectangle(box_left, box_top, box_right, box_bottom, outline=RED, width=3 if _piece_box(item) == focus else 1)
-            if show_numbers and item.number:
-                canvas.create_rectangle(box_left, box_top, box_left + 22, box_top + 16, fill="#0c0c0c", outline="")
-                canvas.create_text(box_left + 3, box_top + 1, anchor="nw", text=str(item.number), fill="#ffffff", font=("Segoe UI", 11, "bold"))
-        piece = self._change_piece()
-        if self._change_note is not None and piece is not None:
-            self._change_note.configure(text=_size_line(piece))
-
+            outline, width, dashed = _cut_style(item, item.cut_id in self._change_picks)
+            canvas.create_rectangle(box_left, box_top, box_right, box_bottom, outline=outline, width=width)
+            if dashed:
+                canvas.create_rectangle(box_left + 3, box_top + 3, box_right - 3, box_bottom - 3, outline=outline, width=1)
+            if item.locked:
+                canvas.create_rectangle(box_left + 3, box_top + 3, box_right - 3, box_bottom - 3, outline=PIN, width=2)
+            label = _cut_badge(item, self.selected, self.custom_names.get())
+            if label:
+                canvas.create_rectangle(box_left, box_top, box_left + max(22, 7 * len(label)), box_top + 16, fill="#0c0c0c", outline="")
+                canvas.create_text(box_left + 3, box_top + 1, anchor="nw", text=label, fill="#ffffff", font=("Segoe UI", 11, "bold"))
     def _change_nudge(self, edge: str, grow: bool) -> None:
-        piece = self._change_piece()
-        sheet = self.selected
-        if piece is None or sheet is None:
-            return
-        self._cut_boxes = [_piece_box(piece)]
-        sheet.unlocked_boxes.add(_piece_box(piece))
-        self._nudge(edge, grow)
-        self._paint_change_view()
-
-    def _change_hit(self, view_x: int, view_y: int):
-        piece = self._change_piece()
-        origin = getattr(self, "_change_origin", None)
-        if piece is None or origin is None:
-            return None
-        left0, top0, scale = origin
-        left = (piece.x - left0) * scale
-        top = (piece.y - top0) * scale
-        right = left + piece.width * scale
-        bottom = top + piece.height * scale
-        pad = 8
-        edge = ""
-        if abs(view_y - top) <= pad and left - pad <= view_x <= right + pad:
-            edge += "n"
-        if abs(view_y - bottom) <= pad and left - pad <= view_x <= right + pad:
-            edge += "s"
-        if abs(view_x - left) <= pad and top - pad <= view_y <= bottom + pad:
-            edge += "w"
-        if abs(view_x - right) <= pad and top - pad <= view_y <= bottom + pad:
-            edge += "e"
-        if not edge:
-            return None
-        return edge
-
-    def _change_cursor(self, event) -> None:
-        canvas = self._change_canvas
-        edge = self._change_hit(event.x, event.y)
-        cursors = {"nw": "size_nw_se", "se": "size_nw_se", "ne": "size_ne_sw", "sw": "size_ne_sw", "n": "sb_v_double_arrow", "s": "sb_v_double_arrow", "e": "sb_h_double_arrow", "w": "sb_h_double_arrow"}
-        canvas.configure(cursor=cursors.get(edge or "", "hand2"))
-
-    def _change_press(self, event) -> None:
         piece = self._change_piece()
         if piece is None:
             return
-        edge = self._change_hit(event.x, event.y)
-        if edge is None:
-            pan = list(getattr(self, "_change_pan", [0.0, 0.0]))
-            self._change_drag_state = ("pan", event.x, event.y, pan[0], pan[1])
-            return
-        layout = self._change_layout()
-        if layout is not None:
-            _cw, _ch, left, top, rect_w, rect_h, *_rest = layout
-            self._change_frozen_bounds = (left, top, left + rect_w, top + rect_h)
-        self._change_drag_state = ("edge", edge, piece.x, piece.y, piece.width, piece.height, event.x, event.y)
+        self._cut_ids = [piece.cut_id]
+        self._nudge(edge, grow)
+        self._paint_change_view()
+
+    def _edge_pad(self, scale: float) -> int:
+        # Grow the grab zone when zoomed out so thin edges stay easy to catch.
+        boost = int((1.25 - scale) * 18) if 0 < scale < 1.25 else 0
+        return 20 + max(0, boost)
+
+    def _box_view_rect(self, piece, origin):
+        left0, top0, scale = origin
+        left = (piece.x - left0) * scale
+        top = (piece.y - top0) * scale
+        return left, top, left + piece.width * scale, top + piece.height * scale
+
+    def _edge_on_box(self, view_x: int, view_y: int, rect, outer_pad: int):
+        left, top, right, bottom = rect
+        width = right - left
+        height = bottom - top
+        # Keep a real middle so a selected box can be dragged, not only resized.
+        inner_x = min(outer_pad, max(3, (width - 12) / 2))
+        inner_y = min(outer_pad, max(3, (height - 12) / 2))
+        in_x = left - outer_pad <= view_x <= right + outer_pad
+        in_y = top - outer_pad <= view_y <= bottom + outer_pad
+        if not in_x or not in_y:
+            return "", float("inf")
+        if left + inner_x <= view_x <= right - inner_x and top + inner_y <= view_y <= bottom - inner_y:
+            return "", float("inf")
+        dist_n = abs(view_y - top)
+        dist_s = abs(view_y - bottom)
+        dist_w = abs(view_x - left)
+        dist_e = abs(view_x - right)
+        pad_n = outer_pad if view_y < top else inner_y
+        pad_s = outer_pad if view_y > bottom else inner_y
+        pad_w = outer_pad if view_x < left else inner_x
+        pad_e = outer_pad if view_x > right else inner_x
+        edge = ""
+        if dist_n <= pad_n and in_x:
+            edge += "n"
+        if dist_s <= pad_s and in_x:
+            edge += "s"
+        if dist_w <= pad_w and in_y:
+            edge += "w"
+        if dist_e <= pad_e and in_y:
+            edge += "e"
+        if not edge:
+            return "", float("inf")
+        dist = min(
+            dist_n if "n" in edge else float("inf"),
+            dist_s if "s" in edge else float("inf"),
+            dist_w if "w" in edge else float("inf"),
+            dist_e if "e" in edge else float("inf"),
+        )
+        return edge, dist
+
+    def _change_hit(self, view_x: int, view_y: int, selected_only: bool = False):
+        origin = getattr(self, "_change_origin", None)
+        if origin is None:
+            return None, None
+        pad = self._edge_pad(origin[2])
+        selected = [piece for piece in self._preview_pieces if piece.cut_id in self._change_picks]
+        can_move = len(selected) == 1 and not selected[0].locked
+        best = None
+        for piece in selected:
+            if piece.locked:
+                continue
+            edge, dist = self._edge_on_box(view_x, view_y, self._box_view_rect(piece, origin), pad)
+            if edge and (best is None or dist < best[2]):
+                best = (piece, edge, dist)
+        if best is not None:
+            return best[0], best[1]
+        if can_move:
+            piece = selected[0]
+            left, top, right, bottom = self._box_view_rect(piece, origin)
+            if left <= view_x <= right and top <= view_y <= bottom:
+                return piece, "move"
+        if selected_only:
+            return None, None
+        hits = []
+        for piece in self._preview_pieces:
+            left, top, right, bottom = self._box_view_rect(piece, origin)
+            if left - pad <= view_x <= right + pad and top - pad <= view_y <= bottom + pad:
+                hits.append(piece)
+        if not hits:
+            return None, None
+        piece = min(hits, key=lambda item: item.width * item.height)
+        edge, _dist = self._edge_on_box(view_x, view_y, self._box_view_rect(piece, origin), pad)
+        return piece, edge or ""
+
+    def _change_cursor(self, event) -> None:
+        canvas = self._change_canvas
+        piece, edge = self._change_hit(event.x, event.y, selected_only=True)
+        cursors = {"nw": "size_nw_se", "se": "size_nw_se", "ne": "size_ne_sw", "sw": "size_ne_sw", "n": "sb_v_double_arrow", "s": "sb_v_double_arrow", "e": "sb_h_double_arrow", "w": "sb_h_double_arrow", "move": "fleur"}
+        if piece is not None and not piece.locked:
+            canvas.configure(cursor=cursors.get(edge or "", "hand2"))
+        else:
+            canvas.configure(cursor="hand2")
+
+    def _change_press(self, event) -> None:
+        piece, edge = self._change_hit(event.x, event.y)
+        pan = list(getattr(self, "_change_pan", [0.0, 0.0]))
+        picked = (
+            piece is not None
+            and piece.cut_id in self._change_picks
+            and not piece.locked
+        )
+        can_resize = picked and bool(edge) and edge != "move"
+        can_move = picked and edge == "move" and len(self._change_picks) == 1
+        self._change_drag_state = (
+            "maybe-box" if can_resize or can_move else "maybe-pan",
+            event.x,
+            event.y,
+            pan[0],
+            pan[1],
+            piece,
+            edge,
+            bool(event.state & 0x0004),
+            bool(event.state & 0x0001),
+            False,
+        )
 
     def _change_drag(self, event) -> None:
         state = getattr(self, "_change_drag_state", None)
         if state is None:
             return
+        if state[0] in {"maybe-pan", "maybe-box"}:
+            kind, start_x, start_y, pan_x, pan_y, piece, edge, ctrl, shift, _moved = state
+            if abs(event.x - start_x) <= 8 and abs(event.y - start_y) <= 8:
+                return
+            if kind == "maybe-box":
+                self._change_id = piece.cut_id
+                self._change_drag_state = ("edge", edge, piece.x, piece.y, piece.width, piece.height, start_x, start_y, piece.cut_id)
+            else:
+                self._change_drag_state = ("pan", start_x, start_y, pan_x, pan_y)
+            state = self._change_drag_state
         if state[0] == "pan":
             _kind, start_x, start_y, pan_x, pan_y = state
             self._change_pan = [pan_x + event.x - start_x, pan_y + event.y - start_y]
@@ -2580,19 +2783,25 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         image = self._preview_image
         if origin is None or piece is None or image is None:
             return
-        _kind, edge, x, y, width, height, start_x, start_y = state
+        _kind, edge, x, y, width, height, start_x, start_y, *_rest = state
         scale = origin[2] or 1
         dx = int(round((event.x - start_x) / scale))
         dy = int(round((event.y - start_y) / scale))
         left, top, right, bottom = x, y, x + width, y + height
-        if "w" in edge:
+        if edge == "move":
             left = x + dx
-        if "e" in edge:
-            right = x + width + dx
-        if "n" in edge:
             top = y + dy
-        if "s" in edge:
-            bottom = y + height + dy
+            right = left + width
+            bottom = top + height
+        else:
+            if "w" in edge:
+                left = x + dx
+            if "e" in edge:
+                right = x + width + dx
+            if "n" in edge:
+                top = y + dy
+            if "s" in edge:
+                bottom = y + height + dy
         if left > right:
             left, right = right, left
         if top > bottom:
@@ -2610,7 +2819,16 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         state = getattr(self, "_change_drag_state", None)
         self._change_drag_state = None
         self._change_frozen_bounds = None
-        if state is None or state[0] != "edge":
+        if state is None:
+            return
+        if state[0] in {"maybe-pan", "maybe-box"}:
+            _kind, _x, _y, _px, _py, piece, _edge, ctrl, shift, _moved = state
+            if piece is not None:
+                self._apply_change_select(piece.cut_id, ctrl=ctrl, shift=shift)
+                if piece.locked:
+                    self._set_status(f"Cut {piece.number} is locked. Unlock it before you resize.")
+            return
+        if state[0] != "edge":
             self._paint_change_view()
             return
         piece = self._change_piece()
@@ -2618,11 +2836,9 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         image = self._preview_image
         if piece is None or sheet is None or image is None:
             return
-        identity = _piece_box(piece)
-        self._cut_boxes = [identity]
-        sheet.unlocked_boxes.add(identity)
-        self._push_box_history(sheet, f"Picture {piece.number or identity} set to {piece.width}×{piece.height}")
-        sheet.manual_boxes[identity] = (piece.x, piece.y, piece.width, piece.height)
+        self._cut_ids = [piece.cut_id]
+        self._push_box_history(sheet, f"Picture {piece.number or piece.cut_id} set to {piece.width}×{piece.height}")
+        sheet.cuts[piece.cut_id]["box"] = (piece.x, piece.y, piece.width, piece.height)
         piece.image = image.crop((piece.x, piece.y, piece.x + piece.width, piece.y + piece.height))
         self._mark_change_dirty()
         self._paint_change_view()
@@ -2683,11 +2899,11 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
 
     def _split_piece(self, vertical: bool) -> None:
         sheet = self.selected
-        piece = self._focused_piece()
+        picks = [piece for piece in self._preview_pieces if piece.cut_id in self._cut_ids and not piece.keep_with]
+        piece = picks[0] if len(picks) == 1 else self._focused_piece()
         if sheet is None or piece is None:
-            self._set_status("Select one picture on the bottom row first.")
+            self._set_status("Light one number, then split.")
             return
-        identity = _piece_box(piece)
         if piece.width < 2 and vertical:
             self._set_status("That picture is too narrow to split.")
             return
@@ -2696,64 +2912,173 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             return
         if vertical:
             half = max(1, piece.width // 2)
-            boxes = ((piece.x, piece.y, half, piece.height), (piece.x + half, piece.y, piece.width - half, piece.height))
-            label = "Split left and right"
+            first = (piece.x, piece.y, half, piece.height)
+            second = (piece.x + half, piece.y, piece.width - half, piece.height)
+            label = "Split across"
         else:
             half = max(1, piece.height // 2)
-            boxes = ((piece.x, piece.y, piece.width, half), (piece.x, piece.y + half, piece.width, piece.height - half))
-            label = "Split top and bottom"
+            first = (piece.x, piece.y, piece.width, half)
+            second = (piece.x, piece.y + half, piece.width, piece.height - half)
+            label = "Split down"
         self._push_box_history(sheet, label)
-        sheet.splits[identity] = boxes
+        record = sheet.cuts[piece.cut_id]
+        record["box"] = first
+        new_id = sheet.new_cut_id()
+        sheet.cuts[new_id] = empty_cut(second, split_from=piece.cut_id)
+        index = sheet.cut_order.index(piece.cut_id)
+        sheet.cut_order.insert(index + 1, new_id)
+        self._cut_ids = [piece.cut_id, new_id]
+        self._cut_anchor = piece.cut_id
         self._refresh_grouped_preview(
-            f"{label}. The first half keeps number {piece.number} and the new picture is the next number. Later numbers move up."
+            f"{label}. The first half keeps number {piece.number}. The new half is the next number."
         )
 
-    def _merge_selected(self) -> None:
-        """Join two or more bottom-row pictures into the earliest number."""
+    def _quick_merge(self) -> None:
+        """Join highlighted pictures on the main page without a confirm prompt."""
+        self._merge_selected(ask=False)
+
+    def _undo_last(self) -> None:
+        self._undo_box(1)
+
+    def _merge_selected(self, ask: bool = True) -> None:
+        """Join two or more selected pictures into the earliest number."""
         sheet = self.selected
-        chosen = [piece for piece in self._preview_pieces if _piece_box(piece) in set(self._cut_boxes) and not piece.out]
+        chosen = [piece for piece in self._preview_pieces if piece.cut_id in set(self._cut_ids) and not piece.keep_with]
         chosen.sort(key=lambda piece: piece.number or 10**9)
         if sheet is None or len(chosen) < 2:
-            self._set_status("Select two or more pictures on the bottom row. Merge 2+ joins them into the earliest number.")
+            self._set_status("Highlight two or more pictures, then Quick merge.")
             return
         keep_piece = chosen[0]
-        keep = _piece_box(keep_piece)
-        dropped = [_piece_box(piece) for piece in chosen[1:]]
-        numbers = ", ".join(str(piece.number) for piece in chosen[1:])
+        numbers = ", ".join(str(piece.number) for piece in chosen)
+        if ask and not messagebox.askyesno(
+            "Merge cuts?",
+            f"Merge {numbers} into {keep_piece.number}?",
+            parent=getattr(self, "_change_window", None) or self,
+        ):
+            return
         self._push_box_history(sheet, f"Merged {numbers} into {keep_piece.number}")
-        for drop in dropped:
-            sheet.sprite_merges.append((keep, drop))
-        self._cut_boxes = [keep]
-        self._refresh_grouped_preview(
-            f"Merged {numbers} into {keep_piece.number}. They are one picture now, and the later numbers moved down. Undo separates them."
-        )
+        left = min(item.x for item in chosen)
+        top = min(item.y for item in chosen)
+        right = max(item.x + item.width for item in chosen)
+        bottom = max(item.y + item.height for item in chosen)
+        sheet.cuts[keep_piece.cut_id]["box"] = (left, top, right - left, bottom - top)
+        dropped = [item.cut_id for item in chosen[1:]]
+        sheet.cut_order = [cut_id for cut_id in sheet.cut_order if cut_id not in dropped]
+        for cut_id in dropped:
+            sheet.cuts.pop(cut_id, None)
+        self._cut_ids = [keep_piece.cut_id]
+        self._refresh_grouped_preview(f"Merged {numbers} into {keep_piece.number}.")
 
     def _pass_as_is(self) -> None:
         """Keep the selected cuts as their own files in the zip."""
         sheet = self.selected
-        if sheet is None or not self._cut_boxes:
+        if sheet is None or not self._cut_ids:
             self._set_status("Select the pictures that should go in the zip as their own files.")
             return
-        chosen = set(self._cut_boxes)
         self._push_box_history(sheet, "Pass selection as is")
-        sheet.removed_boxes = [box for box in sheet.removed_boxes if box not in chosen]
-        sheet.grouped_boxes = [box for box in sheet.grouped_boxes if box not in chosen]
-        sheet.sprite_merges = [pair for pair in sheet.sprite_merges if pair[0] not in chosen and pair[1] not in chosen]
-        sheet.passed_boxes.update(chosen)
-        self._refresh_grouped_preview(
-            "Those pictures will go in the zip as their own files. They are marked purple so you can see they were left as they are."
-        )
+        for cut_id in self._cut_ids:
+            record = sheet.cuts.get(cut_id)
+            if record is None:
+                continue
+            record["passed"] = True
+            record["out"] = False
+            record["keep_with"] = ""
+        self._refresh_grouped_preview("Those pictures will go in the zip as they are now. Purple marks Pass as is.")
+        self._sync_edit_window()
+
+    def _new_cut(self) -> None:
+        sheet = self.selected
+        image = self._preview_image
+        if sheet is None or image is None:
+            return
+        pieces = self._preview_pieces
+        if pieces:
+            width = max(8, int(sum(item.width for item in pieces) / len(pieces)))
+            height = max(8, int(sum(item.height for item in pieces) / len(pieces)))
+        else:
+            width, height = 32, 32
+        focus_id = self._change_id if self._change_id in self._change_picks else next(iter(self._change_picks), None)
+        near = next((item for item in pieces if item.cut_id == focus_id), None)
+        if near is not None:
+            x = near.x + 12
+            y = near.y + 12
+            if x + width > image.width:
+                x = max(0, near.x - 12)
+            if y + height > image.height:
+                y = max(0, near.y - 12)
+            x = max(0, min(x, image.width - width))
+            y = max(0, min(y, image.height - height))
+        else:
+            layout = self._change_layout()
+            if layout is None:
+                x = max(0, (image.width - width) // 2)
+                y = max(0, (image.height - height) // 2)
+            else:
+                _cw, _ch, left, top, rect_w, rect_h, *_rest = layout
+                x = max(0, min(image.width - width, int(left + rect_w / 2 - width / 2)))
+                y = max(0, min(image.height - height, int(top + rect_h / 2 - height / 2)))
+        count = len(sheet.cut_order) + 1
+        ask = ctk.CTkInputDialog(text=f"What number should this new cut be? 1 to {count}.", title="New cut")
+        raw = ask.get_input()
+        if raw is None:
+            return
+        try:
+            number = max(1, min(count, int(raw)))
+        except ValueError:
+            number = count
+        self._push_box_history(sheet, "New cut")
+        cut_id = sheet.new_cut_id()
+        sheet.cuts[cut_id] = empty_cut((x, y, width, height), created=True)
+        sheet.cut_order.insert(number - 1, cut_id)
+        self._cut_ids = [cut_id]
+        self._change_picks = {cut_id}
+        self._change_id = cut_id
+        self._refresh_grouped_preview(f"New cut is number {number}. Drag it where you want it.")
+        self._sync_edit_window()
+
+    def _keep_with(self) -> None:
+        sheet = self.selected
+        chosen = [piece for piece in self._preview_pieces if piece.cut_id in set(self._cut_ids)]
+        if sheet is None or len(chosen) != 2:
+            self._set_status("Light two numbers: the leftover and the sprite it belongs with.")
+            return
+        chosen.sort(key=lambda piece: piece.width * piece.height)
+        child, parent = chosen
+        child_name = _cut_label(child, sheet, self.custom_names.get())
+        parent_name = _cut_label(parent, sheet, self.custom_names.get())
+        if not messagebox.askyesno(
+            "Keep with?",
+            f"Keep {child_name} with {parent_name}? {child_name} will not be its own file.",
+            parent=getattr(self, "_change_window", None) or self,
+        ):
+            return
+        self._push_box_history(sheet, f"Keep {child_name} with {parent_name}")
+        sheet.cuts[child.cut_id]["keep_with"] = parent.cut_id
+        sheet.cuts[child.cut_id]["out"] = False
+        sheet.cuts[child.cut_id]["passed"] = False
+        self._refresh_grouped_preview(f"{child_name} is kept with {parent_name}.")
+        self._sync_edit_window()
+
+    def _sync_edit_window(self) -> None:
+        window = getattr(self, "_change_window", None)
+        if window is None or not window.winfo_exists():
+            return
+        self._change_ids = [piece.cut_id for piece in self._preview_pieces]
+        self._mark_change_dirty()
+        self._rebuild_change_picker()
+        self._paint_change_view()
 
     def _focused_piece(self):
-        if len(self._cut_boxes) != 1:
+        if len(self._cut_ids) != 1:
             return None
-        box = self._cut_boxes[0]
-        return next((piece for piece in self._preview_pieces if _piece_box(piece) == box), None)
+        cut_id = self._cut_ids[0]
+        return next((piece for piece in self._preview_pieces if piece.cut_id == cut_id), None)
 
     def _resize_hit(self, view_x: int, view_y: int):
-        """Edge of the one bottom-row cut, so the big sheet is not used to pick a different sprite."""
+        """Main preview is select-only. Box edits happen in Edit cuts."""
+        return None
         piece = self._focused_piece()
-        if piece is None or self.selected is None or _piece_box(piece) not in self.selected.unlocked_boxes:
+        if piece is None:
             return None
         origin_x, origin_y, scale = self._view_origin
         if scale <= 0:
@@ -2811,7 +3136,6 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         piece.x, piece.y = left, top
         piece.width, piece.height = right - left, bottom - top
         self._draw_preview()
-        self._show_sizes()
 
     def _nudge_key(self, edge: str, event) -> str | None:
         widget = self.focus_get()
@@ -2828,9 +3152,6 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         image = self._preview_image
         if sheet is None or piece is None or image is None:
             self._set_status("Select one picture on the bottom row first.")
-            return
-        if _piece_box(piece) not in sheet.unlocked_boxes:
-            self._set_status("Unlock that picture before nudging an edge.")
             return
         left, top = piece.x, piece.y
         right, bottom = piece.x + piece.width, piece.y + piece.height
@@ -2852,14 +3173,17 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         bottom = max(top + 1, min(bottom, image_h))
         piece.x, piece.y = left, top
         piece.width, piece.height = right - left, bottom - top
-        identity = _piece_box(piece)
         side = {"w": "left", "e": "right", "n": "up", "s": "down"}[edge]
-        self._push_box_history(sheet, f"Picture {piece.number or identity} {side} {'out' if grow else 'in'} 1 px")
-        sheet.manual_boxes[identity] = (piece.x, piece.y, piece.width, piece.height)
+        self._push_box_history(sheet, f"Picture {piece.number or piece.cut_id} {side} {'out' if grow else 'in'} 1 px")
+        sheet.cuts[piece.cut_id]["box"] = (piece.x, piece.y, piece.width, piece.height)
         piece.image = image.crop((piece.x, piece.y, piece.x + piece.width, piece.y + piece.height))
+        if getattr(self, "_change_window", None) is not None:
+            self._preview_pieces = self._visible_from(self._raw_pieces, sheet)
+            self._paint_change_view()
+            self._rebuild_change_picker()
+            return
         self._fill_thumbs()
         self._draw_preview()
-        self._show_sizes()
 
     def _commit_resize(self) -> None:
         sheet = self.selected
@@ -2867,39 +3191,19 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         image = self._preview_image
         if sheet is None or piece is None or image is None:
             return
-        identity = _piece_box(piece)
         box = (piece.x, piece.y, piece.width, piece.height)
-        self._push_box_history(sheet, f"Picture {piece.number or identity} set to {box[2]}×{box[3]}")
-        sheet.manual_boxes[identity] = box
+        self._push_box_history(sheet, f"Picture {piece.number or piece.cut_id} set to {box[2]}×{box[3]}")
+        sheet.cuts[piece.cut_id]["box"] = box
         piece.image = image.crop((piece.x, piece.y, piece.x + piece.width, piece.y + piece.height))
         self._fill_thumbs()
         self._draw_preview()
-        self._show_sizes()
         self._set_status(f"Box adjusted. Undo has {len(sheet.box_undo)} step(s). Cyan means edited.")
 
     def _box_state(self, sheet: Sheet) -> dict:
-        return {
-            "manual": dict(sheet.manual_boxes),
-            "splits": dict(sheet.splits),
-            "merges": list(sheet.sprite_merges),
-            "grouped": list(sheet.grouped_boxes),
-            "removed": list(sheet.removed_boxes),
-            "group_steps": list(sheet.group_steps),
-            "passed": set(sheet.passed_boxes),
-        }
+        return sheet.snapshot_cuts()
 
     def _apply_box_state(self, sheet: Sheet, state: dict) -> None:
-        sheet.manual_boxes = dict(state.get("manual", {}))
-        sheet.splits = dict(state.get("splits", {}))
-        sheet.sprite_merges = list(state.get("merges", []))
-        if "grouped" in state:
-            sheet.grouped_boxes = list(state["grouped"])
-        if "removed" in state:
-            sheet.removed_boxes = list(state["removed"])
-        if "group_steps" in state:
-            sheet.group_steps = list(state["group_steps"])
-        if "passed" in state:
-            sheet.passed_boxes = set(state["passed"])
+        sheet.restore_cuts(state)
 
     def _push_box_history(self, sheet: Sheet, label: str) -> None:
         sheet.box_undo.append((self._box_state(sheet), label))
@@ -2914,14 +3218,8 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
     def _undo_box(self, steps: int = 1) -> None:
         sheet = self.selected
         if sheet is None or not sheet.box_undo:
-            if sheet is not None and (sheet.manual_boxes or sheet.splits or sheet.sprite_merges):
-                self._push_box_history(sheet, "Current boxes")
-                cleared = self._box_state(sheet)
-                cleared["manual"] = {}
-                cleared["splits"] = {}
-                cleared["merges"] = []
-                sheet.box_undo[-1] = (cleared, "Clear the current box edits")
-                self._undo_box(1)
+            if sheet is not None and sheet.cuts:
+                self._set_status("Nothing to undo on this sheet.")
                 return
             self._set_status("Nothing to undo on this sheet.")
             return
@@ -2954,6 +3252,66 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             target = snapshot
         self._restore_boxes(sheet, target)
 
+    def _show_change_history(self) -> None:
+        """List box changes and let the user undo back to any one of them."""
+        parent = getattr(self, "_change_window", None)
+        if parent is None or not parent.winfo_exists():
+            parent = self
+        existing = getattr(self, "_history_window", None)
+        if existing is not None and existing.winfo_exists():
+            existing.destroy()
+        window = ctk.CTkToplevel(parent)
+        window.title("Change history")
+        window.geometry("520x420")
+        window.transient(parent)
+        window.configure(fg_color=BG)
+        self._history_window = window
+        ctk.CTkLabel(
+            window,
+            text="Newest first. Undo to here puts the sheet back to before that change. The same list is used on the main page and in Edit cuts.",
+            text_color=MUTED,
+            wraplength=480,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", padx=12, pady=(12, 8))
+        self._history_list = ctk.CTkScrollableFrame(window, fg_color=BG)
+        self._history_list.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        self._button(window, "Close", window.destroy, width=100).pack(pady=(0, 12))
+        self._fill_history_list()
+
+    def _fill_history_list(self) -> None:
+        frame = getattr(self, "_history_list", None)
+        if frame is None or not frame.winfo_exists():
+            return
+        for child in frame.winfo_children():
+            child.destroy()
+        sheet = self.selected
+        history = list(reversed(sheet.box_undo)) if sheet is not None else []
+        if not history:
+            ctk.CTkLabel(frame, text="No changes on this sheet yet.", text_color=MUTED, anchor="w").pack(fill="x")
+            return
+        self._button(frame, "Undo all", lambda: self._undo_history_to(len(history)), width=100).pack(anchor="w", pady=(0, 8))
+        for index, (_snapshot, label) in enumerate(history):
+            row = ctk.CTkFrame(frame, fg_color=PANEL, corner_radius=6)
+            row.pack(fill="x", pady=3)
+            ctk.CTkLabel(row, text=label or "Change", text_color=TEXT, anchor="w", wraplength=280).pack(
+                side="left", fill="x", expand=True, padx=8, pady=6
+            )
+            self._button(row, "Undo to here", lambda n=index + 1: self._undo_history_to(n), width=120).pack(
+                side="right", padx=8, pady=6
+            )
+
+    def _undo_history_to(self, steps: int) -> None:
+        self._undo_box(steps)
+        if getattr(self, "_hold_main", False):
+            live = {piece.cut_id for piece in self._preview_pieces}
+            self._change_ids = [piece.cut_id for piece in self._preview_pieces]
+            self._change_picks = {cut_id for cut_id in self._change_picks if cut_id in live}
+            self._cut_ids = list(self._change_picks)
+            self._rebuild_change_picker()
+            self._paint_change_view()
+        self._fill_history_list()
+
     def _box_history_menu(self, event, redo: bool) -> None:
         sheet = self.selected
         history = sheet.box_redo if redo and sheet is not None else sheet.box_undo if sheet is not None else []
@@ -2970,7 +3328,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
     def _revert_boxes(self) -> None:
         """Put only the selected sprites back to the boxes from the scan."""
         sheet = self.selected
-        chosen = list(self._cut_boxes)
+        chosen = list(self._cut_ids)
         if sheet is None:
             self._set_status("Open a sheet first.")
             return
@@ -2986,37 +3344,38 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             return
         chosen_set = set(chosen)
         self._push_box_history(sheet, "Revert selected sprites to original")
-        sheet.manual_boxes = {key: value for key, value in sheet.manual_boxes.items() if key not in chosen_set}
-        sheet.locked_boxes.difference_update(chosen_set)
-        sheet.unlocked_boxes.difference_update(chosen_set)
-        sheet.splits = {key: value for key, value in sheet.splits.items() if key not in chosen_set}
-        sheet.sprite_merges = [pair for pair in sheet.sprite_merges if pair[0] not in chosen_set and pair[1] not in chosen_set]
+        for cut_id in chosen_set:
+            record = sheet.cuts.get(cut_id)
+            if record is None:
+                continue
+            record["box"] = tuple(record.get("origin") or record["box"])
+            record["out"] = False
+            record["passed"] = False
+            record["keep_with"] = ""
         self._refresh_grouped_preview("Those sprites are back to the original scan. Undo can restore the edits.")
 
-    def _lock_selected(self) -> None:
+    def _set_cut_lock(self, locked: bool) -> None:
         sheet = self.selected
-        if sheet is None or not self._cut_boxes:
-            self._set_status("Select one or more pictures on the bottom row first.")
+        ids = list(getattr(self, "_change_picks", None) or self._cut_ids)
+        if sheet is None or not ids:
+            self._set_status("Highlight a cut first, then Lock or Unlock.")
             return
-        for box in self._cut_boxes:
-            sheet.unlocked_boxes.discard(box)
-            if box in sheet.manual_boxes:
-                sheet.locked_boxes.add(box)
+        self._push_box_history(sheet, "Lock" if locked else "Unlock")
+        for cut_id in ids:
+            record = sheet.cuts.get(cut_id)
+            if record is not None:
+                record["locked"] = locked
+        self._preview_pieces = self._visible_from(self._raw_pieces, sheet)
+        self._mark_change_dirty()
+        self._rebuild_change_picker()
+        self._paint_change_view()
+        self._fill_thumbs()
         self._draw_preview()
-        self._style_cut_selection()
-        self._set_status("Locked. Edited boxes turn green. Unlock them again before dragging.")
-
-    def _unlock_selected(self) -> None:
-        sheet = self.selected
-        if sheet is None or not self._cut_boxes:
-            self._set_status("Select one or more pictures on the bottom row first.")
-            return
-        for box in self._cut_boxes:
-            sheet.unlocked_boxes.add(box)
-            sheet.locked_boxes.discard(box)
-        self._draw_preview()
-        self._style_cut_selection()
-        self._set_status("Unlocked. Drag a corner of one selected picture. The hand means you can pan.")
+        self._set_status(
+            "Locked. Sky dashed outline. That box cannot be moved or resized."
+            if locked
+            else "Unlocked. Highlight it, then drag an edge to resize."
+        )
 
     def _preview_cursor(self, event) -> None:
         if self.eyedropper:
@@ -3039,6 +3398,73 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         }
         self.canvas.configure(cursor=cursors.get(edge, "hand2"))
 
+    def _project_label(self) -> str:
+        return safe_zip_stem(self.project_name.get())
+
+    def _ask_zip_clash(self, existing: list[Path], project: str) -> tuple[str, bool] | None:
+        """Ask what to do when zip names are already in the folder.
+
+        Returns (project name, unique) or None if cancelled.
+        unique True keeps the old files and writes a new name.
+        """
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Those zip names are already used")
+        dialog.configure(fg_color=BG)
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        chosen: dict[str, tuple[str, bool] | None] = {"value": None}
+        names = [path.name for path in existing[:8]]
+        extra = len(existing) - len(names)
+        listed = "\n".join(names)
+        if extra > 0:
+            listed += f"\n…and {extra} more"
+        ctk.CTkLabel(
+            dialog,
+            text="These zip names are already in that folder:\n\n"
+            + listed
+            + "\n\nSave without replacing keeps the old files and writes a unique name, like castle (2).zip. "
+            "A project name prefixes every zip, like FF1 - castle.zip. Leave it blank for the generic unique name. "
+            "Overwrite old files replaces the ones already there.",
+            text_color=TEXT,
+            wraplength=460,
+            justify="left",
+            anchor="w",
+        ).grid(row=0, column=0, columnspan=2, sticky="ew", padx=16, pady=(16, 8))
+        ctk.CTkLabel(dialog, text="Project name", text_color=MUTED).grid(
+            row=1, column=0, sticky="w", padx=16, pady=(0, 4)
+        )
+        name_var = ctk.StringVar(value=project)
+        name_box = ctk.CTkEntry(
+            dialog,
+            textvariable=name_var,
+            fg_color=PANEL,
+            border_color=LINE,
+            text_color=TEXT,
+            placeholder_text="optional",
+            width=320,
+        )
+        name_box.grid(row=1, column=1, sticky="ew", padx=(0, 16), pady=(0, 4))
+
+        def finish(unique: bool) -> None:
+            chosen["value"] = (safe_zip_stem(name_var.get()), unique)
+            dialog.destroy()
+
+        def cancel() -> None:
+            chosen["value"] = None
+            dialog.destroy()
+
+        buttons = ctk.CTkFrame(dialog, fg_color=BG)
+        buttons.grid(row=2, column=0, columnspan=2, sticky="e", padx=16, pady=(12, 16))
+        self._button(buttons, "Cancel", cancel, width=100).pack(side="left", padx=(0, 6))
+        self._button(buttons, "Overwrite old files", lambda: finish(False), width=170).pack(side="left", padx=(0, 6))
+        self._button(buttons, "Save without replacing", lambda: finish(True), primary=True, width=190).pack(side="left")
+        name_box.bind("<Return>", lambda _event: finish(True))
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+        dialog.grab_set()
+        name_box.focus_set()
+        dialog.wait_window()
+        return chosen["value"]
+
     def _export(self) -> None:
         if self.busy:
             return
@@ -3053,6 +3479,24 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
                 parent=self,
             )
             return
+
+        project = self._project_label()
+        self._persist()
+        used: set[Path] = set()
+        preview_paths = [
+            allocate_zip_path(folder, zip_stem(project, sheet.path.stem), used, unique=False)
+            for sheet in self.sheets
+        ]
+        existing = [path for path in preview_paths if path.exists()]
+        unique = True
+        if existing:
+            choice = self._ask_zip_clash(existing, project)
+            if choice is None:
+                return
+            project, unique = choice
+            self.project_name.set(project)
+            self._persist()
+
         project_path = None
         if self.bundle_project.get():
             project_path = filedialog.asksaveasfilename(
@@ -3060,16 +3504,16 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
                 parent=self,
                 defaultextension=".zip",
                 filetypes=[("Zip folder", "*.zip")],
-                initialfile="sprite sheets.zip",
+                initialfile=project_zip_name(project),
             )
             if not project_path:
                 return
 
         self.min_pixels = self._read_min_pixels()
-        used: set[Path] = set()
+        used = set()
         jobs = []
         for sheet in self.sheets:
-            dest = allocate_zip_path(folder, sheet.path.stem, used, self.keep_both.get())
+            dest = allocate_zip_path(folder, zip_stem(project, sheet.path.stem), used, unique=unique)
             jobs.append(
                 {
                     "source": sheet.path,
@@ -3078,23 +3522,10 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
                     "color": self._gap_for(sheet),
                     "custom": dict(sheet.custom_names) if self.custom_names.get() else None,
                     "excluded": sheet.excluded,
-                    "grouped": list(sheet.grouped_boxes),
-                    "removed": list(sheet.removed_boxes),
-                    "manual": dict(sheet.manual_boxes),
-                    "splits": dict(sheet.splits),
-                    "merges": list(sheet.sprite_merges),
+                    "order": list(sheet.cut_order),
+                    "cuts": {key: dict(value) for key, value in sheet.cuts.items()},
                 }
             )
-        if not self.keep_both.get():
-            existing = [job["dest"] for job in jobs if job["dest"].exists()]
-            if existing:
-                ok = messagebox.askyesno(
-                    "Overwrite existing zips?",
-                    f"{len(existing)} zip file(s) already exist in that folder.\n\nOverwrite them?",
-                    parent=self,
-                )
-                if not ok:
-                    return
 
         self.busy = True
         self.scan_button.configure(state="disabled")
@@ -3124,21 +3555,20 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
                             written.append(job["dest"])
                             continue
                         image = load_image(job["source"])
-                        result = split_sheet(
-                            image, job["color"], tolerance, minimum, build_images=True, smart_gaps=smart
-                        )
-                        result.pieces = apply_manual_boxes(
-                            apply_grouped_cuts(result.pieces, job["grouped"]), image, job["manual"]
-                        )
-                        result.pieces = _export_user_edits(result.pieces, image, job["splits"], job["merges"])
-                        result.pieces = omit_pieces(result.pieces, job["removed"])
-                        if not result.pieces:
+                        if job["order"]:
+                            result_pieces = export_from_cuts(image, job["order"], job["cuts"])
+                        else:
+                            result = split_sheet(
+                                image, job["color"], tolerance, minimum, build_images=True, smart_gaps=smart
+                            )
+                            result_pieces = result.pieces
+                        if not result_pieces:
                             skipped.append(job["source"].name)
                             continue
-                        names = names_for_pieces(job["stem"], result.pieces, job["custom"])
+                        names = names_for_pieces(job["stem"], result_pieces, job["custom"])
                         pairs = [
                             (name, scale_piece(piece.image, output_scale))
-                            for name, piece in zip(names, result.pieces)
+                            for name, piece in zip(names, result_pieces)
                             if piece.image
                         ]
                         write_sheet_zip(job["dest"], pairs)
@@ -3279,18 +3709,63 @@ def _piece_box(piece) -> tuple[int, int, int, int]:
     return piece.source_box or (piece.x, piece.y, piece.width, piece.height)
 
 
-def _size_line(piece) -> str:
-    """Automatic box, the box now, and how many pixels it moved each way."""
-    origin_x, origin_y, origin_w, origin_h = _piece_box(piece)
-    left = origin_x - piece.x
-    right = (piece.x + piece.width) - (origin_x + origin_w)
-    up = origin_y - piece.y
-    down = (piece.y + piece.height) - (origin_y + origin_h)
-    name = str(piece.number) if piece.number else "left out"
-    return (
-        f"{name}: was {origin_w}×{origin_h}. Now {piece.width}×{piece.height}. "
-        f"{left:+d} left, {right:+d} right, {up:+d} up, {down:+d} down."
-    )
+def _cut_style(piece, selected: bool) -> tuple[str, int, bool]:
+    if selected:
+        return GOLD, 3, bool(piece.out)
+    if piece.out:
+        return RED, 2, True
+    if piece.locked:
+        return PIN, 3, True
+    if piece.keep_with:
+        return LOCK, 2, False
+    if piece.created:
+        return EDIT, 2, False
+    if piece.split_from:
+        return SPLIT, 2, True
+    if piece.passed:
+        return PASS, 3, False
+    return RED, 2, False
+
+
+def _export_number(sheet, cut_id: str) -> int:
+    number = 0
+    for item in sheet.cut_order:
+        record = sheet.cuts.get(item)
+        if record is None or record.get("out") or record.get("keep_with"):
+            continue
+        number += 1
+        if item == cut_id:
+            return number
+    return 0
+
+
+def _cut_label(piece, sheet, custom: bool) -> str:
+    # The cutter always reads by number. Custom names only go on saved files.
+    if piece.number:
+        return f"#{piece.number}"
+    return "this cut"
+
+
+def _cut_badge(piece, sheet, custom: bool) -> str:
+    if piece.number:
+        return f"{piece.number}L" if piece.locked else str(piece.number)
+    return _cut_note(piece, sheet, custom)
+
+
+def _cut_note(piece, sheet, custom: bool) -> str:
+    if piece.out:
+        return "Left out of zip"
+    if piece.locked:
+        return "Locked"
+    if piece.keep_with and sheet is not None:
+        index = sheet.cut_order.index(piece.keep_with) + 1 if piece.keep_with in sheet.cut_order else 0
+        parent_name = f"#{index}" if index else "another sprite"
+        return f"With {parent_name}"
+    if piece.created:
+        return "New cut"
+    if piece.split_from:
+        return "From a split"
+    return ""
 
 
 def _piece_label(sheet: Sheet) -> str:

@@ -33,6 +33,15 @@ class Piece:
     image: Image.Image | None = None
     # The box from the original cut. Grouping changes x/y/width/height, not this.
     source_box: tuple[int, int, int, int] | None = None
+    # Stable id. The number can change when the user reorders cuts.
+    cut_id: str = ""
+    origin_box: tuple[int, int, int, int] | None = None
+    created: bool = False
+    split_from: str = ""
+    keep_with: str = ""
+    out: bool = False
+    passed: bool = False
+    locked: bool = False
 
 
 @dataclass
@@ -213,7 +222,7 @@ def _extract_pieces(
             view[gap[y : y + height, x : x + width], 3] = 0
             cropped = Image.fromarray(view, "RGBA")
         box = (x, y, width, height)
-        pieces.append(Piece(number, x, y, width, height, cropped, box))
+        pieces.append(Piece(number, x, y, width, height, cropped, box, origin_box=box))
     return pieces
 
 
@@ -512,7 +521,16 @@ def apply_manual_boxes(
 
 
 def _copy_piece(piece: Piece) -> Piece:
-    return Piece(piece.number, piece.x, piece.y, piece.width, piece.height, piece.image, piece.source_box)
+    copy = Piece(piece.number, piece.x, piece.y, piece.width, piece.height, piece.image, piece.source_box)
+    copy.cut_id = piece.cut_id
+    copy.origin_box = piece.origin_box
+    copy.created = piece.created
+    copy.split_from = piece.split_from
+    copy.keep_with = piece.keep_with
+    copy.out = piece.out
+    copy.passed = piece.passed
+    copy.locked = piece.locked
+    return copy
 
 
 def _identity_box(piece: Piece) -> tuple[int, int, int, int]:
@@ -677,3 +695,90 @@ def _actual_color_near(
     if not np.any(mask):
         return None
     return _mode_color(step[mask])
+
+
+def empty_cut(box: tuple[int, int, int, int], created: bool = False, split_from: str = "") -> dict:
+    """One cut record. The id lives on the sheet, not in this dict."""
+    return {
+        "box": tuple(box),
+        "origin": tuple(box),
+        "created": created,
+        "split_from": split_from,
+        "keep_with": "",
+        "out": False,
+        "passed": False,
+        "locked": False,
+    }
+
+
+def pieces_from_cuts(image: Image.Image | None, order: list[str], cuts: dict[str, dict]) -> list[Piece]:
+    """Build the on-screen pieces from stable cut records."""
+    shown: list[Piece] = []
+    number = 1
+    for cut_id in order:
+        record = cuts.get(cut_id)
+        if record is None:
+            continue
+        x, y, width, height = record["box"]
+        cropped = image.crop((x, y, x + width, y + height)) if image is not None else None
+        origin = tuple(record.get("origin") or record["box"])
+        piece = Piece(
+            number,
+            x,
+            y,
+            width,
+            height,
+            cropped,
+            origin,
+            cut_id=cut_id,
+            origin_box=origin,
+            created=bool(record.get("created")),
+            split_from=str(record.get("split_from") or ""),
+            keep_with=str(record.get("keep_with") or ""),
+            out=bool(record.get("out")),
+            passed=bool(record.get("passed")),
+            locked=bool(record.get("locked")),
+        )
+        piece.number = number
+        number += 1
+        shown.append(piece)
+    return shown
+
+
+def export_from_cuts(image: Image.Image, order: list[str], cuts: dict[str, dict]) -> list[Piece]:
+    """Crop the cuts that belong in the zip. Kept-with children join their parent box."""
+    boxes: dict[str, list[int]] = {}
+    for cut_id in order:
+        record = cuts.get(cut_id)
+        if record is None or record.get("out"):
+            continue
+        parent = record.get("keep_with") or ""
+        if parent:
+            child = list(record["box"])
+            if parent not in boxes:
+                parent_record = cuts.get(parent)
+                if parent_record is None or parent_record.get("out"):
+                    boxes[cut_id] = child
+                    continue
+                boxes[parent] = list(parent_record["box"])
+            left, top, width, height = boxes[parent]
+            cx, cy, cw, ch = child
+            new_left = min(left, cx)
+            new_top = min(top, cy)
+            new_right = max(left + width, cx + cw)
+            new_bottom = max(top + height, cy + ch)
+            boxes[parent] = [new_left, new_top, new_right - new_left, new_bottom - new_top]
+            continue
+        boxes.setdefault(cut_id, list(record["box"]))
+    pieces: list[Piece] = []
+    number = 1
+    for cut_id in order:
+        box = boxes.get(cut_id)
+        if box is None:
+            continue
+        x, y, width, height = box
+        pieces.append(
+            Piece(number, x, y, width, height, image.crop((x, y, x + width, y + height)), tuple(box), cut_id=cut_id)
+        )
+        number += 1
+    return pieces
