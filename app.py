@@ -16,6 +16,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 from cutter import (
+    crop_cut,
     empty_cut,
     export_from_cuts,
     hex_to_rgb,
@@ -95,7 +96,10 @@ Order and names
 Drag a thumb to a new place to change its number. The cutter always shows those numbers so you can pick and edit. Saved files use the sheet name plus that number, like castle -1.png, unless Custom file names is on. Turn that on to type a name. A unique name stays as you typed it, like hero.png. If more than one picture uses the same name, the list adds -1, -2, -3, like sword -1.png. Pictures left out of the zip are not numbered. A project name only names the zip. It does not change these numbers. Reset order puts the numbers back the way they were after the first scan. It asks first. Undo takes one move back. Change history can undo several.
 
 Quick merge
-Joins two or more highlighted pictures into one box. The earliest number stays. Undo takes that merge back.
+Joins two or more highlighted pictures into one box. The earliest number stays. Undo takes that merge back. Leave out gap color is on by default, so the gap between those boxes is taken out of the merged picture.
+
+Leave out gap color
+On for each picture unless you turn it off. It takes this sheet's gap color out of the selected pictures, including after a merge, a new box, or a resize. The empty bar is left see-through, or filled with the color around it if that bar is trapped inside the picture. Turn it off to keep the gap color in those pictures. You can change one picture, several, or all.
 
 Change history
 Lists every box change on this sheet. Undo to here puts the sheet back to before that change. The same list is used on the main screen and in Edit cuts.
@@ -129,9 +133,10 @@ Lock pins the selected boxes so they cannot be moved or resized. Their outline t
 Buttons
 New cut makes a new box, about the average size of the current cuts, then asks what number it should be. The new box is selected. If another box was highlighted, the new one appears near it.
 Split across cuts one selected box in half, left and right. Split down cuts it top and bottom.
-Merge turns two or more selected boxes into one box that covers them all. The earliest number stays. Undo and Redo can take that merge back.
+Merge turns two or more selected boxes into one box that covers them all. The earliest number stays. Undo and Redo can take that merge back. Leave out gap color is on by default, so the gap between those boxes is taken out of the merged picture and left empty or see-through. Turn that checkbox off on the selected pictures if you want to keep the gap color in them.
 Keep with needs two cuts: a leftover and the sprite it belongs with. The leftover is not its own file.
 Leave out keeps the selected cuts on screen with a dashed red outline, and they are not in the zip. Pass as is puts them in the zip as their own files, using the boxes you see now.
+Leave out gap color takes the sheet's gap color out of the selected pictures. It is on by default. Turn it off to keep that color in those pictures. You can change one picture, several, or all.
 Undo and Redo step through your edits. Change history lists every change on this sheet and lets you undo back to any one of them. Revert puts the selected cuts back to the first scan.
 
 Colors
@@ -190,6 +195,55 @@ def register_extra_formats() -> None:
         register_avif_opener()
     except Exception:
         pass
+
+
+class WrapBar(ctk.CTkFrame):
+    """A row of controls that drops to the next line when the window is too narrow."""
+
+    def __init__(self, master, gap: int = 4, **kwargs):
+        super().__init__(master, **kwargs)
+        self._gap = gap
+        self._items: list = []
+        self._busy = False
+        self._last_h = 34
+        self.configure(height=34)
+        self.pack_propagate(False)
+        self.grid_propagate(False)
+        self.bind("<Configure>", lambda _event: self.reflow())
+
+    def add(self, widget):
+        self._items.append(widget)
+        self.after_idle(self.reflow)
+        return widget
+
+    def reflow(self, _event=None) -> None:
+        if self._busy or not self.winfo_exists():
+            return
+        self._busy = True
+        try:
+            width = max(self.winfo_width(), 1)
+            x = 0
+            y = 0
+            row_h = 0
+            for child in self._items:
+                if child is None or not child.winfo_exists():
+                    continue
+                child.update_idletasks()
+                child_w = max(child.winfo_reqwidth(), 1)
+                child_h = max(child.winfo_reqheight(), 1)
+                if x and x + child_w > width:
+                    x = 0
+                    y += row_h + self._gap
+                    row_h = 0
+                child.place(x=x, y=y)
+                x += child_w + self._gap
+                row_h = max(row_h, child_h)
+            needed = y + row_h if row_h else 34
+            if abs(self._last_h - needed) > 1:
+                self._last_h = needed
+                self.configure(height=needed)
+        finally:
+            self._busy = False
 
 
 class Sheet:
@@ -324,6 +378,8 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self.project_name = ctk.StringVar(value=saved["project_name"])
         self.bundle_project = ctk.BooleanVar(value=saved["bundle_project"])
         self.smart_gaps = ctk.BooleanVar(value=saved["smart_gaps"])
+        self.clear_gap_var = ctk.BooleanVar(value=True)
+        self._clear_gap_sync = False
 
         self._build()
         self.after(200, self._apply_window_icon)
@@ -627,7 +683,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self.canvas.bind("<Configure>", lambda _event: self._draw_preview())
         self.canvas.bind("<Motion>", self._preview_cursor)
 
-        action_row = ctk.CTkFrame(preview_wrap, fg_color=BG)
+        action_row = WrapBar(preview_wrap, gap=4, fg_color=BG)
         action_row.grid(row=4, column=0, sticky="ew", padx=8, pady=(0, 2))
         self.zoom_row = action_row
         self._button(
@@ -636,7 +692,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             self._pass_as_is,
             width=84,
             tip="The selected pictures go in the zip as their own files, using the cuts you see now.",
-        ).pack(side="left")
+        )
         self._button(
             action_row,
             "Leave out",
@@ -644,42 +700,43 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             primary=True,
             width=84,
             tip="Leave the selected pictures out of the zip. They stay on screen with a dashed red outline.",
-        ).pack(side="left", padx=(4, 0))
+        )
         self._button(
             action_row,
             "Quick merge",
             self._quick_merge,
             width=92,
             tip="Join two or more highlighted pictures into one box. The earliest number stays.",
-        ).pack(side="left", padx=(4, 0))
+        )
         self._button(
             action_row,
             "Undo",
             self._undo_last,
             width=56,
             tip="Take back the last change on this sheet, including a Quick merge.",
-        ).pack(side="left", padx=(4, 0))
+        )
         self._button(
             action_row,
             "History",
             self._show_change_history,
             width=72,
             tip="See every box change on this sheet and undo back to any one of them.",
-        ).pack(side="left", padx=(4, 0))
+        )
         self._button(
             action_row,
             "Edit cuts",
             self._show_sprite_changes,
             width=80,
             tip="Open a larger window to zoom, move boxes, split, join, or make a new cut. That window has its own Help.",
-        ).pack(side="left", padx=(4, 0))
+        )
         self._button(
             action_row,
             "Reset order",
             self._ask_reset_order,
             width=100,
             tip="Put the numbers back in the original scan order. This asks first.",
-        ).pack(side="left", padx=(4, 0))
+        )
+        self.clear_gap_box = self._gap_check(action_row)
 
         self.preview_note = ctk.CTkLabel(
             preview_wrap,
@@ -728,6 +785,8 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         )
         if tip:
             self._tip(button, tip)
+        if isinstance(parent, WrapBar):
+            parent.add(button)
         return button
 
     def _tip(self, widget, text: str) -> None:
@@ -789,6 +848,27 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             hover_color=RED_HOVER,
             text_color=TEXT,
         )
+
+    def _gap_check(self, parent):
+        box = ctk.CTkCheckBox(
+            parent,
+            text="Leave out gap color",
+            variable=self.clear_gap_var,
+            command=self._on_clear_gap,
+            fg_color=RED,
+            hover_color=RED_HOVER,
+            text_color=MUTED,
+            height=28,
+            checkbox_width=16,
+            checkbox_height=16,
+        )
+        self._tip(
+            box,
+            "On for the selected pictures. The gap color is taken out of those pictures and left empty, like the cutter already does on the sheet. Turn it off to keep that color in the picture. Uses this sheet's gap color, or the default if you did not pick one.",
+        )
+        if isinstance(parent, WrapBar):
+            parent.add(box)
+        return box
 
     def _support_line(self, parent, lead: str, command) -> None:
         row = ctk.CTkFrame(parent, fg_color="transparent")
@@ -2154,6 +2234,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             self._set_status(f"{count} pictures selected. Quick merge joins them, or open Edit cuts to change boxes.")
         elif count == 1:
             self._set_status("1 picture selected. Open Edit cuts to move the box, or leave it out of the zip.")
+        self._sync_clear_gap()
 
     def _style_thumb(self, cut_id: str) -> None:
         column = self._thumb_columns.get(cut_id)
@@ -2207,6 +2288,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         if getattr(self, "_hold_main", False):
             self._sync_edit_window()
         self._set_status(f"{note} {_piece_label(sheet)}.")
+        self._sync_clear_gap()
 
     def _exclude_cuts_selected(self) -> None:
         self._leave_out(self._cut_ids)
@@ -2228,10 +2310,66 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
     def _visible_from(self, pieces, sheet: Sheet):
         if not sheet.cuts and pieces:
             sheet.install_scan(pieces)
-        shown = pieces_from_cuts(self._preview_image, sheet.cut_order, sheet.cuts)
+        shown = pieces_from_cuts(
+            self._preview_image, sheet.cut_order, sheet.cuts, self._gap_for(sheet), self.tolerance
+        )
         sheet.piece_total = len(sheet.cut_order)
         sheet.piece_count = sheet.exportable_count()
         return shown
+
+    def _clear_gap_controls(self):
+        boxes = [getattr(self, "clear_gap_box", None), getattr(self, "_change_clear_gap", None)]
+        return [box for box in boxes if box is not None and box.winfo_exists()]
+
+    def _sync_clear_gap(self) -> None:
+        sheet = self.selected
+        ids = [cut_id for cut_id in self._cut_ids if sheet is not None and cut_id in sheet.cuts]
+        on = all(sheet.cuts[cut_id].get("clear_gap", True) is not False for cut_id in ids) if ids else True
+        mixed = bool(
+            ids
+            and any(sheet.cuts[cut_id].get("clear_gap") is False for cut_id in ids)
+            and any(sheet.cuts[cut_id].get("clear_gap", True) is not False for cut_id in ids)
+        )
+        self._clear_gap_sync = True
+        self.clear_gap_var.set(False if mixed else on)
+        for box in self._clear_gap_controls():
+            box.configure(
+                state="normal" if ids else "disabled",
+                text="Leave out gap color (mixed)" if mixed else "Leave out gap color",
+            )
+        self._clear_gap_sync = False
+        self._reflow_wrap_bars()
+
+    def _reflow_wrap_bars(self) -> None:
+        for bar in (getattr(self, "zoom_row", None), getattr(self, "_change_actions", None), getattr(self, "_change_picks", None)):
+            if bar is not None and hasattr(bar, "reflow"):
+                bar.reflow()
+
+    def _on_clear_gap(self) -> None:
+        if self._clear_gap_sync:
+            return
+        sheet = self.selected
+        ids = [cut_id for cut_id in self._cut_ids if sheet is not None and cut_id in sheet.cuts]
+        if sheet is None or not ids:
+            self._sync_clear_gap()
+            self._set_status("Select a picture first, then turn Leave out gap color on or off.")
+            return
+        on = bool(self.clear_gap_var.get())
+        self._push_box_history(sheet, "Leave out gap color" if on else "Keep gap color")
+        for cut_id in ids:
+            sheet.cuts[cut_id]["clear_gap"] = on
+        self._preview_pieces = self._visible_from(self._raw_pieces, sheet)
+        self._fill_thumbs()
+        self._draw_preview()
+        if getattr(self, "_hold_main", False):
+            self._sync_edit_window()
+        self._sync_clear_gap()
+        self._set_status(
+            "Gap color is left out of the selected pictures."
+            if on
+            else "Gap color stays in the selected pictures."
+        )
+        self._reflow_wrap_bars()
 
     def _set_main_preview_held(self, held: bool) -> None:
         """Hide the main sheet while Edit cuts is open so only one canvas is drawn."""
@@ -2289,21 +2427,22 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
             justify="left",
             anchor="w",
         ).pack(fill="x", padx=12, pady=(0, 4))
-        actions = ctk.CTkFrame(window, fg_color=BG)
+        actions = WrapBar(window, gap=6, fg_color=BG)
         actions.pack(fill="x", padx=12, pady=(0, 4))
-        self._button(actions, "New cut", self._new_cut, width=88, tip="Make a new box, about the average size of the current cuts, then pick its number.").pack(side="left")
-        self._button(actions, "Split across", lambda: self._change_split(True), width=110, tip="Cut the one selected box in half, left and right.").pack(side="left", padx=(6, 0))
-        self._button(actions, "Split down", lambda: self._change_split(False), width=100, tip="Cut the one selected box in half, top and bottom.").pack(side="left", padx=(6, 0))
-        self._button(actions, "Merge", self._change_merge, width=80, tip="Turn two or more selected boxes into one box that covers them all. Undo and Redo can take this back.").pack(side="left", padx=(6, 0))
-        self._button(actions, "Keep with", self._keep_with, width=96, tip="Pick two cuts: a leftover and the sprite it belongs with. The leftover is not its own file.").pack(side="left", padx=(6, 0))
-        self._button(actions, "Lock", lambda: self._set_cut_lock(True), width=72, tip="Lock the selected boxes. A locked box keeps its size and cannot be dragged.").pack(side="left", padx=(6, 0))
-        self._button(actions, "Unlock", lambda: self._set_cut_lock(False), width=88, tip="Unlock the selected boxes so you can move or resize them again.").pack(side="left", padx=(6, 0))
-        self._button(actions, "Leave out", self._exclude_cuts_selected, width=96, tip="Leave the selected cuts out of the zip. They stay on screen with a dashed red outline.").pack(side="left", padx=(6, 0))
-        self._button(actions, "Pass as is", self._pass_as_is, width=96, tip="The selected cuts go in the zip as their own files, using the boxes you see now.").pack(side="left", padx=(6, 0))
-        self._button(actions, "Undo", lambda: self._change_history(False), width=72, tip="Take back the last edit in this window.").pack(side="left", padx=(12, 0))
-        self._button(actions, "Redo", lambda: self._change_history(True), width=72, tip="Put back an edit you just undid.").pack(side="left", padx=(6, 0))
-        self._button(actions, "Revert", self._revert_boxes, width=80, tip="Put the selected cuts back to the first scan. Other cuts stay as they are.").pack(side="left", padx=(6, 0))
-        self._button(actions, "Change history", self._show_change_history, width=130, tip="See every box change on this sheet and undo back to any one of them.").pack(side="left", padx=(6, 0))
+        self._change_actions = actions
+        self._button(actions, "New cut", self._new_cut, width=88, tip="Make a new box, about the average size of the current cuts, then pick its number.")
+        self._button(actions, "Split across", lambda: self._change_split(True), width=110, tip="Cut the one selected box in half, left and right.")
+        self._button(actions, "Split down", lambda: self._change_split(False), width=100, tip="Cut the one selected box in half, top and bottom.")
+        self._button(actions, "Merge", self._change_merge, width=80, tip="Turn two or more selected boxes into one box that covers them all. Undo and Redo can take this back.")
+        self._button(actions, "Keep with", self._keep_with, width=96, tip="Pick two cuts: a leftover and the sprite it belongs with. The leftover is not its own file.")
+        self._button(actions, "Lock", lambda: self._set_cut_lock(True), width=72, tip="Lock the selected boxes. A locked box keeps its size and cannot be dragged.")
+        self._button(actions, "Unlock", lambda: self._set_cut_lock(False), width=88, tip="Unlock the selected boxes so you can move or resize them again.")
+        self._button(actions, "Leave out", self._exclude_cuts_selected, width=96, tip="Leave the selected cuts out of the zip. They stay on screen with a dashed red outline.")
+        self._button(actions, "Pass as is", self._pass_as_is, width=96, tip="The selected cuts go in the zip as their own files, using the boxes you see now.")
+        self._button(actions, "Undo", lambda: self._change_history(False), width=72, tip="Take back the last edit in this window.")
+        self._button(actions, "Redo", lambda: self._change_history(True), width=72, tip="Put back an edit you just undid.")
+        self._button(actions, "Revert", self._revert_boxes, width=80, tip="Put the selected cuts back to the first scan. Other cuts stay as they are.")
+        self._button(actions, "Change history", self._show_change_history, width=130, tip="See every box change on this sheet and undo back to any one of them.")
         look = ctk.CTkFrame(window, fg_color=BG)
         look.pack(fill="x", padx=12, pady=(0, 4))
         ctk.CTkLabel(look, text="Zoom", text_color=MUTED).pack(side="left")
@@ -2331,11 +2470,14 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self._change_canvas.bind("<Button-4>", lambda event: self._change_wheel_step(event, 1.12))
         self._change_canvas.bind("<Button-5>", lambda event: self._change_wheel_step(event, 1 / 1.12))
         self._change_canvas.bind("<Configure>", self._change_resized)
-        picks = ctk.CTkFrame(window, fg_color=BG)
+        picks = WrapBar(window, gap=6, fg_color=BG)
         picks.pack(fill="x", padx=12, pady=(0, 2))
-        self._button(picks, "Select all", self._change_select_all, width=96, tip="Select every picture so you can edit them together.").pack(side="left")
-        self._button(picks, "Select none", self._change_select_none, width=108, tip="Clear the selection. Nothing is being edited.").pack(side="left", padx=(6, 0))
-        self._button(picks, "Reset order", self._ask_reset_order, width=100, tip="Put the numbers back in the original scan order. This asks first.").pack(side="left", padx=(6, 0))
+        self._change_picks = picks
+        self._button(picks, "Select all", self._change_select_all, width=96, tip="Select every picture so you can edit them together.")
+        self._button(picks, "Select none", self._change_select_none, width=108, tip="Clear the selection. Nothing is being edited.")
+        self._button(picks, "Reset order", self._ask_reset_order, width=100, tip="Put the numbers back in the original scan order. This asks first.")
+        self._change_clear_gap = self._gap_check(picks)
+        self._sync_clear_gap()
         self._change_thumbs = ctk.CTkScrollableFrame(
             window,
             orientation="horizontal",
@@ -2351,6 +2493,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self._button(self._change_decide, "Cancel", self._change_cancel, width=100, tip="Throw away the edits in this window and go back.").pack(side="left", padx=(8, 0))
         self._fill_thumbs()
         self._paint_change_view()
+        window.after(40, self._reflow_wrap_bars)
 
     def _mark_change_dirty(self) -> None:
         self._change_dirty = True
@@ -2394,6 +2537,9 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         window = getattr(self, "_change_window", None)
         self._change_thumbs = None
         self._change_window = None
+        self._change_actions = None
+        self._change_picks = None
+        self._change_clear_gap = None
         if window is not None and window.winfo_exists():
             window.destroy()
         self._set_main_preview_held(False)
@@ -2532,6 +2678,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self._cut_ids = [item for item in ids if item in self._change_picks]
         self._rebuild_change_picker()
         self._paint_change_view()
+        self._sync_clear_gap()
 
     def _toggle_change_piece(self, cut_id) -> None:
         self._apply_change_select(cut_id, ctrl=True)
@@ -2542,6 +2689,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self._cut_ids = list(self._change_picks)
         self._rebuild_change_picker()
         self._paint_change_view()
+        self._sync_clear_gap()
 
     def _change_select_none(self) -> None:
         self._change_picks = set()
@@ -2549,6 +2697,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self._cut_ids = []
         self._rebuild_change_picker()
         self._paint_change_view()
+        self._sync_clear_gap()
 
     def _change_split(self, vertical: bool) -> None:
         self._cut_ids = [cut_id for cut_id in self._change_ids if cut_id in self._change_picks]
@@ -2839,7 +2988,13 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         self._cut_ids = [piece.cut_id]
         self._push_box_history(sheet, f"Picture {piece.number or piece.cut_id} set to {piece.width}×{piece.height}")
         sheet.cuts[piece.cut_id]["box"] = (piece.x, piece.y, piece.width, piece.height)
-        piece.image = image.crop((piece.x, piece.y, piece.x + piece.width, piece.y + piece.height))
+        piece.image = crop_cut(
+            image,
+            (piece.x, piece.y, piece.width, piece.height),
+            sheet.cuts[piece.cut_id],
+            self._gap_for(sheet),
+            self.tolerance,
+        )
         self._mark_change_dirty()
         self._paint_change_view()
 
@@ -2925,6 +3080,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         record["box"] = first
         new_id = sheet.new_cut_id()
         sheet.cuts[new_id] = empty_cut(second, split_from=piece.cut_id)
+        sheet.cuts[new_id]["clear_gap"] = record.get("clear_gap", True) is not False
         index = sheet.cut_order.index(piece.cut_id)
         sheet.cut_order.insert(index + 1, new_id)
         self._cut_ids = [piece.cut_id, new_id]
@@ -3176,7 +3332,13 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         side = {"w": "left", "e": "right", "n": "up", "s": "down"}[edge]
         self._push_box_history(sheet, f"Picture {piece.number or piece.cut_id} {side} {'out' if grow else 'in'} 1 px")
         sheet.cuts[piece.cut_id]["box"] = (piece.x, piece.y, piece.width, piece.height)
-        piece.image = image.crop((piece.x, piece.y, piece.x + piece.width, piece.y + piece.height))
+        piece.image = crop_cut(
+            image,
+            (piece.x, piece.y, piece.width, piece.height),
+            sheet.cuts[piece.cut_id],
+            self._gap_for(sheet),
+            self.tolerance,
+        )
         if getattr(self, "_change_window", None) is not None:
             self._preview_pieces = self._visible_from(self._raw_pieces, sheet)
             self._paint_change_view()
@@ -3194,7 +3356,7 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
         box = (piece.x, piece.y, piece.width, piece.height)
         self._push_box_history(sheet, f"Picture {piece.number or piece.cut_id} set to {box[2]}×{box[3]}")
         sheet.cuts[piece.cut_id]["box"] = box
-        piece.image = image.crop((piece.x, piece.y, piece.x + piece.width, piece.y + piece.height))
+        piece.image = crop_cut(image, box, sheet.cuts[piece.cut_id], self._gap_for(sheet), self.tolerance)
         self._fill_thumbs()
         self._draw_preview()
         self._set_status(f"Box adjusted. Undo has {len(sheet.box_undo)} step(s). Cyan means edited.")
@@ -3556,7 +3718,9 @@ class App(ctk.CTk, *(TkinterDnD.DnDWrapper,) if TkinterDnD else ()):
                             continue
                         image = load_image(job["source"])
                         if job["order"]:
-                            result_pieces = export_from_cuts(image, job["order"], job["cuts"])
+                            result_pieces = export_from_cuts(
+                                image, job["order"], job["cuts"], job["color"], tolerance
+                            )
                         else:
                             result = split_sheet(
                                 image, job["color"], tolerance, minimum, build_images=True, smart_gaps=smart
@@ -3761,6 +3925,8 @@ def _cut_note(piece, sheet, custom: bool) -> str:
         index = sheet.cut_order.index(piece.keep_with) + 1 if piece.keep_with in sheet.cut_order else 0
         parent_name = f"#{index}" if index else "another sprite"
         return f"With {parent_name}"
+    if getattr(piece, "clear_gap", True) is False:
+        return "Keeps gap color"
     if piece.created:
         return "New cut"
     if piece.split_from:

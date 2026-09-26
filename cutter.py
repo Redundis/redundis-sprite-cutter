@@ -42,6 +42,7 @@ class Piece:
     out: bool = False
     passed: bool = False
     locked: bool = False
+    clear_gap: bool = True
 
 
 @dataclass
@@ -530,6 +531,7 @@ def _copy_piece(piece: Piece) -> Piece:
     copy.out = piece.out
     copy.passed = piece.passed
     copy.locked = piece.locked
+    copy.clear_gap = piece.clear_gap
     return copy
 
 
@@ -697,6 +699,80 @@ def _actual_color_near(
     return _mode_color(step[mask])
 
 
+def punch_gap(image: Image.Image, separator: tuple[int, int, int], tolerance: int = 0) -> Image.Image:
+    """Take gap-color pixels out of a crop. Edge-connected bars go see-through."""
+    rgba = np.array(image.convert("RGBA"))
+    height, width = rgba.shape[:2]
+    if width == 0 or height == 0:
+        return image
+    rgb = rgba[:, :, :3].astype(np.int16)
+    key = np.array(separator, dtype=np.int16)
+    gap = np.max(np.abs(rgb - key), axis=2) <= int(tolerance)
+    outside = np.zeros((height, width), dtype=bool)
+    stack: list[tuple[int, int]] = []
+    for x in range(width):
+        if gap[0, x]:
+            stack.append((0, x))
+        if gap[height - 1, x]:
+            stack.append((height - 1, x))
+    for y in range(height):
+        if gap[y, 0]:
+            stack.append((y, 0))
+        if gap[y, width - 1]:
+            stack.append((y, width - 1))
+    while stack:
+        y, x = stack.pop()
+        if outside[y, x] or not gap[y, x]:
+            continue
+        outside[y, x] = True
+        if x > 0:
+            stack.append((y, x - 1))
+        if x + 1 < width:
+            stack.append((y, x + 1))
+        if y > 0:
+            stack.append((y - 1, x))
+        if y + 1 < height:
+            stack.append((y + 1, x))
+    rgba[outside] = (0, 0, 0, 0)
+    interior = np.argwhere(gap & ~outside)
+    neighbors = ((-1, 0), (1, 0), (0, -1), (0, 1))
+    for y, x in interior:
+        fill = None
+        see_through = False
+        for dy, dx in neighbors:
+            ny, nx = int(y) + dy, int(x) + dx
+            if ny < 0 or ny >= height or nx < 0 or nx >= width:
+                continue
+            if gap[ny, nx]:
+                continue
+            if rgba[ny, nx, 3] < 16:
+                see_through = True
+                break
+            if fill is None:
+                fill = rgba[ny, nx].copy()
+        if see_through or fill is None:
+            rgba[int(y), int(x)] = (0, 0, 0, 0)
+        else:
+            rgba[int(y), int(x)] = fill
+    return Image.fromarray(rgba, "RGBA")
+
+
+def crop_cut(
+    image: Image.Image,
+    box: tuple[int, int, int, int],
+    record: dict | None = None,
+    separator: tuple[int, int, int] | None = None,
+    tolerance: int = 0,
+) -> Image.Image:
+    """Crop one cut. Leave out the gap color unless this cut keeps it."""
+    x, y, width, height = box
+    cropped = image.crop((int(x), int(y), int(x + width), int(y + height)))
+    keep = record is not None and record.get("clear_gap") is False
+    if keep or separator is None:
+        return cropped
+    return punch_gap(cropped, separator, tolerance)
+
+
 def empty_cut(box: tuple[int, int, int, int], created: bool = False, split_from: str = "") -> dict:
     """One cut record. The id lives on the sheet, not in this dict."""
     return {
@@ -708,10 +784,17 @@ def empty_cut(box: tuple[int, int, int, int], created: bool = False, split_from:
         "out": False,
         "passed": False,
         "locked": False,
+        "clear_gap": True,
     }
 
 
-def pieces_from_cuts(image: Image.Image | None, order: list[str], cuts: dict[str, dict]) -> list[Piece]:
+def pieces_from_cuts(
+    image: Image.Image | None,
+    order: list[str],
+    cuts: dict[str, dict],
+    separator: tuple[int, int, int] | None = None,
+    tolerance: int = 0,
+) -> list[Piece]:
     """Build the on-screen pieces from stable cut records."""
     shown: list[Piece] = []
     number = 1
@@ -720,7 +803,7 @@ def pieces_from_cuts(image: Image.Image | None, order: list[str], cuts: dict[str
         if record is None:
             continue
         x, y, width, height = record["box"]
-        cropped = image.crop((x, y, x + width, y + height)) if image is not None else None
+        cropped = crop_cut(image, record["box"], record, separator, tolerance) if image is not None else None
         origin = tuple(record.get("origin") or record["box"])
         piece = Piece(
             number,
@@ -738,6 +821,7 @@ def pieces_from_cuts(image: Image.Image | None, order: list[str], cuts: dict[str
             out=bool(record.get("out")),
             passed=bool(record.get("passed")),
             locked=bool(record.get("locked")),
+            clear_gap=record.get("clear_gap", True) is not False,
         )
         piece.number = number
         number += 1
@@ -745,7 +829,13 @@ def pieces_from_cuts(image: Image.Image | None, order: list[str], cuts: dict[str
     return shown
 
 
-def export_from_cuts(image: Image.Image, order: list[str], cuts: dict[str, dict]) -> list[Piece]:
+def export_from_cuts(
+    image: Image.Image,
+    order: list[str],
+    cuts: dict[str, dict],
+    separator: tuple[int, int, int] | None = None,
+    tolerance: int = 0,
+) -> list[Piece]:
     """Crop the cuts that belong in the zip. Kept-with children join their parent box."""
     boxes: dict[str, list[int]] = {}
     for cut_id in order:
@@ -777,8 +867,19 @@ def export_from_cuts(image: Image.Image, order: list[str], cuts: dict[str, dict]
         if box is None:
             continue
         x, y, width, height = box
+        record = cuts.get(cut_id) or {}
         pieces.append(
-            Piece(number, x, y, width, height, image.crop((x, y, x + width, y + height)), tuple(box), cut_id=cut_id)
+            Piece(
+                number,
+                x,
+                y,
+                width,
+                height,
+                crop_cut(image, (x, y, width, height), record, separator, tolerance),
+                tuple(box),
+                cut_id=cut_id,
+                clear_gap=record.get("clear_gap", True) is not False,
+            )
         )
         number += 1
     return pieces
